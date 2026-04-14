@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-04-14
+
+### Fixed
+- **Runtime authentication on execute** (Finding-2 #1): Tasks can now be created with a `runtime_secret`. The broker stores a SHA-256 hash and requires the caller to prove possession of the same secret on `/execute`. Authority no longer attaches solely to possession of a capability token.
+- **Policy-derived scope flows into capability minting** (Finding-2 #2): When a policy rule specifies a structured `scope` (dict/list), it becomes the ceiling during capability minting. Requester-supplied scope can only narrow it, not widen it. Approval reductions further narrow.
+- **Audit chain initialization wired on startup** (Finding-2 #3): Broker lifespan now calls `initialize_chain(db)` to restore `_last_event_hash` from the most recent DB event, ensuring hash-chain continuity across restarts.
+- **Task-scoped audit verification no longer false-alarms** (Finding-2 #4): `verify_audit_chain(task_id=...)` now verifies the full global chain (which interleaves all tasks) and reports per-task event counts. Previously, filtering by `task_id` before verification broke the chain at interleaving boundaries.
+- **Startup adapter loading uses config/loader.py** (Finding-2 #5): `_load_adapters_from_config()` now delegates to `load_adapter_configs()` which resolves `${ENV_VAR}` placeholders in credentials. No more duplicate loading paths.
+- **Value-based secret scanning in result sanitization** (Finding-2 #6): `_sanitize_for_log` and `_sanitize_string` now scan string values for secret patterns (bearer tokens, AWS keys, private keys, connection string passwords, long hex/base64 tokens). Shell stdout, HTTP body strings, and non-key-named secrets are now caught.
+
+### Added
+- `runtime_secret` field on `TaskCreate` and `ExecuteRequest` for runtime session authentication
+- `runtime_secret_hash` column on `Task` model
+- `_sanitize_string()` function for pattern-based secret detection in plain text
+- `_intersect_scopes()` helper for policy×requester scope intersection
+- `_value_looks_secret()` with compiled regex patterns for common secret formats
+- `redact_keys` and `redact_result` support in `config/loader.py` (previously only in `server.py`)
+- 16 new tests covering all 6 findings (133 total, was 117)
+
 ## [0.2.0] - 2026-04-14
 
 ### Fixed
@@ -68,5 +87,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shell adapter rejects dangerous characters and unexpected parameters
 - Audit hash chain detects post-hoc tampering
 
+[0.3.0]: https://github.com/digitalego/jitauth/releases/tag/v0.3.0
 [0.2.0]: https://github.com/digitalego/jitauth/releases/tag/v0.2.0
 [0.1.0]: https://github.com/digitalego/jitauth/releases/tag/v0.1.0

@@ -89,32 +89,61 @@ def write_audit_event(
 def verify_audit_chain(db: Session, task_id: str | None = None) -> dict:
     """Verify the integrity of the audit chain.
 
+    The hash chain is global (events from all tasks are interleaved in a
+    single chain).  When *task_id* is supplied we still verify the **global**
+    chain but report only the events belonging to that task.  This avoids
+    false "broken chain" reports caused by interleaved events from other
+    tasks (Finding-2 #4).
+
     Returns:
         {
             "valid": bool,
             "events_checked": int,
             "first_broken_at": str | None,  # event ID where chain breaks
+            "task_events_checked": int | None,  # only when task_id given
         }
     """
-    q = db.query(AuditEvent).order_by(AuditEvent.timestamp.asc())
-    if task_id:
-        q = q.filter(AuditEvent.task_id == task_id)
-
-    events = q.all()
-    if not events:
+    # Always verify the full global chain for correctness
+    all_events = (
+        db.query(AuditEvent)
+        .order_by(AuditEvent.timestamp.asc())
+        .all()
+    )
+    if not all_events:
         return {"valid": True, "events_checked": 0, "first_broken_at": None}
 
     prev_hash = None
-    for i, event in enumerate(events):
+    first_broken_at = None
+    broken_index = None
+    for i, event in enumerate(all_events):
         if event.prev_event_hash is not None and event.prev_event_hash != prev_hash:
-            return {
-                "valid": False,
-                "events_checked": i + 1,
-                "first_broken_at": event.id,
-            }
+            first_broken_at = event.id
+            broken_index = i
+            break
         prev_hash = _hash_event(event)
 
-    return {"valid": True, "events_checked": len(events), "first_broken_at": None}
+    if first_broken_at is not None:
+        # Chain is globally broken — report it
+        result: dict = {
+            "valid": False,
+            "events_checked": broken_index + 1,
+            "first_broken_at": first_broken_at,
+        }
+        if task_id:
+            task_count = sum(1 for e in all_events[:broken_index + 1] if e.task_id == task_id)
+            result["task_events_checked"] = task_count
+        return result
+
+    # Global chain is valid
+    total = len(all_events)
+    result = {
+        "valid": True,
+        "events_checked": total,
+        "first_broken_at": None,
+    }
+    if task_id:
+        result["task_events_checked"] = sum(1 for e in all_events if e.task_id == task_id)
+    return result
 
 
 def _hash_event(event: AuditEvent) -> str:

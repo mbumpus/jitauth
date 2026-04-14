@@ -32,6 +32,13 @@ class TaskCreate(BaseModel):
     runtime_id: str = Field(min_length=1, max_length=255)
     runtime_type: str = Field(default="llm_orchestrator", max_length=100)
     runtime_trust_tier: str = Field(default="low", max_length=20)
+    runtime_secret: str | None = Field(
+        default=None, min_length=32, max_length=255,
+        description="Session secret for runtime authentication. "
+        "When provided, the broker stores a SHA-256 hash and requires "
+        "the same secret on /execute calls to bind execution to the "
+        "originally authenticated runtime.",
+    )
     objective: str = Field(min_length=1, max_length=100_000)
     actions: list[TaskActionCreate] = Field(min_length=1, max_length=100)
     max_actions: int = Field(default=10, ge=1, le=100)
@@ -122,6 +129,11 @@ class ExecuteRequest(BaseModel):
     task_id: str = Field(min_length=1, max_length=26)
     capability_id: str = Field(min_length=1, max_length=26)
     capability_token: str = Field(min_length=1, max_length=4096)
+    runtime_secret: str | None = Field(
+        default=None, min_length=32, max_length=255,
+        description="Runtime session secret.  Required if the task was "
+        "created with a runtime_secret.",
+    )
     tool: str = Field(min_length=3, max_length=255, pattern=r"^[\w.-]+$")
     arguments: dict = Field(default_factory=dict)
     expected_effect: str | None = Field(default=None, max_length=1000)

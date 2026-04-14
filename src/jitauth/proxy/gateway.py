@@ -111,6 +111,7 @@ async def execute_tool_call(
     arguments: dict[str, Any],
     expected_effect: str | None = None,
     idempotency_key: str | None = None,
+    runtime_secret: str | None = None,
 ) -> dict:
     """Execute a tool call through the gateway.
 
@@ -125,6 +126,7 @@ async def execute_tool_call(
         arguments: Tool call arguments
         expected_effect: Human-readable description of expected effect
         idempotency_key: Optional dedup key
+        runtime_secret: Runtime session secret for caller authentication
 
     Returns:
         dict with invocation_id, tool, success, result, error
@@ -168,6 +170,26 @@ async def execute_tool_call(
             f"Task '{task_id}' does not own capability '{capability_id}'",
             "task_mismatch",
         )
+
+    # 1b2. Verify runtime authentication (Finding-2 #1)
+    # If the task was created with a runtime_secret, the caller must prove
+    # possession of the same secret.  This binds execution to the originally
+    # authenticated runtime, not just to possession of the capability token.
+    from jitauth.core.models import Task
+    task_obj = db.get(Task, task_id)
+    if task_obj and task_obj.runtime_secret_hash:
+        import hashlib
+        if not runtime_secret:
+            raise GatewayError(
+                "This task requires runtime authentication (runtime_secret)",
+                "runtime_auth_required",
+            )
+        caller_hash = hashlib.sha256(runtime_secret.encode()).hexdigest()
+        if caller_hash != task_obj.runtime_secret_hash:
+            raise GatewayError(
+                "Runtime secret does not match the task's registered runtime",
+                "runtime_auth_failed",
+            )
 
     # 1c. Verify token runtime claim matches DB capability
     if token_claims["jitauth:runtime_id"] != cap.runtime_id:
@@ -253,6 +275,8 @@ async def execute_tool_call(
         stored_result = '{"_redacted": true}'
     elif isinstance(adapter_result.result, dict):
         stored_result = json.dumps(_sanitize_for_log(adapter_result.result, extra_keys=extra_redact))
+    elif isinstance(adapter_result.result, str):
+        stored_result = json.dumps(_sanitize_string(adapter_result.result))
     elif adapter_result.result is not None:
         stored_result = json.dumps(adapter_result.result)
     else:
@@ -286,11 +310,12 @@ async def execute_tool_call(
     db.commit()
 
     # Sanitize result before returning to runtime (prevent credential leakage)
-    sanitized_result = (
-        _sanitize_for_log(adapter_result.result, extra_keys=extra_redact)
-        if isinstance(adapter_result.result, dict)
-        else adapter_result.result
-    )
+    if isinstance(adapter_result.result, dict):
+        sanitized_result = _sanitize_for_log(adapter_result.result, extra_keys=extra_redact)
+    elif isinstance(adapter_result.result, str):
+        sanitized_result = _sanitize_string(adapter_result.result)
+    else:
+        sanitized_result = adapter_result.result
 
     return {
         "invocation_id": invocation.id,
@@ -418,9 +443,49 @@ _DEFAULT_SENSITIVE_KEYS = frozenset({
     "access_token", "refresh_token", "authorization", "bearer",
 })
 
+# Patterns that indicate a value itself contains a secret, regardless of
+# the key name.  These are compiled once at module load.  Each pattern is
+# tested against string values; a match triggers redaction of the entire
+# value (Finding-2 #6).
+import re as _re
+
+_SECRET_VALUE_PATTERNS: list[_re.Pattern] = [
+    # Bearer / Basic / Token auth headers embedded in values
+    _re.compile(r"(?i)\b(?:bearer|basic|token)\s+[A-Za-z0-9_\-\.]{8,}"),
+    # AWS-style keys (AKIA...)
+    _re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    # Generic long hex secrets (≥32 hex chars, e.g. API keys)
+    _re.compile(r"\b[0-9a-fA-F]{32,}\b"),
+    # Generic long base64-ish tokens (≥40 chars, alphanumeric + common token chars)
+    _re.compile(r"[A-Za-z0-9_\-]{40,}"),
+    # Private key material
+    _re.compile(r"-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----"),
+    # Connection strings with passwords
+    _re.compile(r"(?i)(?:password|pwd)\s*[:=]\s*\S+"),
+]
+
+
+def _value_looks_secret(value: str) -> bool:
+    """Heuristic: return True if a string value appears to contain a secret."""
+    return any(pat.search(value) for pat in _SECRET_VALUE_PATTERNS)
+
+
+def _sanitize_string(value: str) -> str:
+    """Sanitize a plain string value (e.g. stdout, HTTP body).
+
+    If the string looks like it contains secret material, redact the
+    entire value rather than trying to surgically remove the secret.
+    """
+    if _value_looks_secret(value):
+        return "[REDACTED — potential secret in output]"
+    return value
+
 
 def _sanitize_for_log(data: dict, extra_keys: set[str] | None = None) -> dict:
     """Remove sensitive fields from data before logging or returning to runtime.
+
+    Applies both key-name redaction and value-pattern scanning so that
+    secrets echoed in ordinary fields or shell output are caught.
 
     Args:
         data: Dict to sanitize.
@@ -435,9 +500,13 @@ def _sanitize_for_log(data: dict, extra_keys: set[str] | None = None) -> dict:
             sanitized[k] = _sanitize_for_log(v, extra_keys=extra_keys)
         elif isinstance(v, list):
             sanitized[k] = [
-                _sanitize_for_log(item, extra_keys=extra_keys) if isinstance(item, dict) else item
+                _sanitize_for_log(item, extra_keys=extra_keys)
+                if isinstance(item, dict)
+                else (_sanitize_string(item) if isinstance(item, str) else item)
                 for item in v
             ]
+        elif isinstance(v, str):
+            sanitized[k] = _sanitize_string(v)
         else:
             sanitized[k] = v
     return sanitized

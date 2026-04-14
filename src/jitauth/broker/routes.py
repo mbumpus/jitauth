@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -62,6 +63,11 @@ def health():
 def create_task(req: TaskCreate, db: Session = Depends(get_db)):
     now = datetime.now(timezone.utc)
 
+    # Hash the runtime session secret if provided (Finding-2 #1)
+    secret_hash = None
+    if req.runtime_secret:
+        secret_hash = hashlib.sha256(req.runtime_secret.encode()).hexdigest()
+
     task = Task(
         id=new_id(),
         requester_type=req.requester_type,
@@ -70,6 +76,7 @@ def create_task(req: TaskCreate, db: Session = Depends(get_db)):
         runtime_id=req.runtime_id,
         runtime_type=req.runtime_type,
         runtime_trust_tier=req.runtime_trust_tier,
+        runtime_secret_hash=secret_hash,
         objective=req.objective,
         status=TaskStatus.created,
         max_actions=req.max_actions,
@@ -267,12 +274,34 @@ def request_capabilities(task_id: str, db: Session = Depends(get_db)):
     if approval and approval.reduced_scope:
         reduced_scope = json.loads(approval.reduced_scope)
 
+    # Retrieve policy-derived scopes from the most recent PolicyDecision
+    # for this task.  Policy scope is the ceiling — requester-supplied
+    # scope can only narrow it further, not widen it (Finding-2 #2).
+    policy_scopes: dict[str, dict | list | None] = {}
+    latest_pd = (
+        db.query(PolicyDecision)
+        .filter(PolicyDecision.task_id == task_id)
+        .order_by(PolicyDecision.evaluated_at.desc())
+        .first()
+    )
+    if latest_pd and latest_pd.computed_scope:
+        pd_data = json.loads(latest_pd.computed_scope)
+        for ad in pd_data.get("action_decisions", []):
+            scope_val = ad.get("scope")
+            # Only use structured scopes (dict/list) for intersection.
+            # String sentinels like "minimal" mean "defer to requester scope".
+            if isinstance(scope_val, (dict, list)):
+                policy_scopes.setdefault(ad["system"], scope_val)
+
     # Group actions by target system
     systems: dict[str, list[TaskAction]] = {}
     for action in task.actions:
         systems.setdefault(action.system, []).append(action)
 
     for system, actions in systems.items():
+        # Start with policy-derived scope as the ceiling
+        policy_scope = policy_scopes.get(system)
+
         # Merge resource scopes from all actions in this system
         # resource_scope on TaskAction is already a JSON string — parse before merging
         parsed_scopes = []
@@ -284,18 +313,22 @@ def request_capabilities(task_id: str, db: Session = Depends(get_db)):
                     parsed_scopes.append(a.resource_scope)
 
         if len(parsed_scopes) == 1:
-            merged_scope = json.dumps(parsed_scopes[0])
+            requester_scope = parsed_scopes[0]
         elif parsed_scopes:
-            merged_scope = json.dumps(parsed_scopes)
+            requester_scope = parsed_scopes
         else:
-            merged_scope = None
+            requester_scope = None
 
-        # Apply approval reductions if present
+        # Intersect: policy scope is the ceiling, requester scope narrows
+        effective_scope = _intersect_scopes(policy_scope, requester_scope)
+
+        # Apply approval reductions if present (can only further narrow)
         if reduced_scope:
             system_reduction = reduced_scope.get(system)
             if system_reduction:
-                # Reduced scope narrows: override merged scope
-                merged_scope = json.dumps(system_reduction)
+                effective_scope = system_reduction
+
+        merged_scope = json.dumps(effective_scope) if effective_scope is not None else None
 
         cap = Capability(
             id=new_id(),
@@ -371,13 +404,14 @@ async def execute_tool(req: ExecuteRequest, db: Session = Depends(get_db)):
             arguments=req.arguments,
             expected_effect=req.expected_effect,
             idempotency_key=req.idempotency_key,
+            runtime_secret=req.runtime_secret,
         )
         return ExecuteResponse(**result)
     except GatewayError as e:
         raise HTTPException(
             status_code=403 if any(
                 k in e.code
-                for k in ("not_allowed", "revoked", "mismatch", "token_")
+                for k in ("not_allowed", "revoked", "mismatch", "token_", "runtime_auth")
             ) else 400,
             detail={"error": e.code, "message": str(e)},
         ) from None
@@ -526,6 +560,49 @@ def verify_audit(
 
 
 # ---------- Helpers ----------
+
+
+def _intersect_scopes(
+    policy_scope: dict | list | str | None,
+    requester_scope: dict | list | str | None,
+) -> dict | list | str | None:
+    """Intersect policy-derived scope (ceiling) with requester-supplied scope.
+
+    Rules:
+      - If policy_scope is None → use requester_scope (policy has no restriction)
+      - If requester_scope is None → use policy_scope (requester requested everything)
+      - If both are dicts → for each key, keep only values present in both
+      - Otherwise → prefer the more restrictive (policy_scope)
+    """
+    if policy_scope is None:
+        return requester_scope
+    if requester_scope is None:
+        return policy_scope
+
+    # Both are dicts: intersect per field
+    if isinstance(policy_scope, dict) and isinstance(requester_scope, dict):
+        result = {}
+        for field in set(policy_scope) | set(requester_scope):
+            p_vals = policy_scope.get(field)
+            r_vals = requester_scope.get(field)
+            if p_vals is None:
+                result[field] = r_vals
+            elif r_vals is None:
+                result[field] = p_vals
+            elif isinstance(p_vals, list) and isinstance(r_vals, list):
+                intersection = [v for v in r_vals if v in p_vals]
+                if intersection:
+                    result[field] = intersection
+                else:
+                    # No overlap — use policy (more restrictive)
+                    result[field] = p_vals
+            else:
+                # Non-list: policy wins (ceiling)
+                result[field] = p_vals
+        return result
+
+    # Incompatible types or lists: policy ceiling wins
+    return policy_scope
 
 
 def _audit(db: Session, task_id: str | None, event_type: str, actor: str, details: dict):
