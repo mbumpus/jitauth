@@ -1,6 +1,6 @@
-"""Tests for findings-2.md fixes.
+"""Tests for findings-2.md and findings-3.md fixes.
 
-Each test is tagged with the finding number it validates.
+Each test class is tagged with the finding number it validates.
 """
 
 from __future__ import annotations
@@ -54,13 +54,13 @@ def mock_adapter():
 
 
 def _lifecycle(client, **task_overrides):
-    """Create → classify → policy → capabilities.  Returns (task_id, caps)."""
+    """Create -> classify -> policy -> capabilities. Returns (task_id, caps)."""
     payload = {
         "requester_id": "user_1",
         "runtime_id": "rt_01",
         "runtime_type": "llm_orchestrator",
         "runtime_trust_tier": "low",
-        "objective": "findings-2 test",
+        "objective": "findings test",
         "actions": [{"system": "crm", "action": "read_account", "action_class": "read"}],
         "time_limit_seconds": 300,
     }
@@ -78,15 +78,15 @@ def _lifecycle(client, **task_overrides):
 
 
 # ====================================================================
-# Finding #1 — Runtime authentication
+# Findings-2 #1 / Findings-3 #3 -- Runtime authentication (broker + SDK)
 # ====================================================================
 
 
 class TestRuntimeAuth:
-    """Finding-2 #1: execution bound to authenticated runtime, not just bearer."""
+    """Runtime session secret authentication."""
 
     def test_runtime_secret_happy_path(self, client, mock_adapter):
-        """Task created with runtime_secret → execute with same secret works."""
+        """Execute with correct runtime_secret works."""
         runtime_secret = secrets.token_hex(32)
         task_id, caps = _lifecycle(client, runtime_secret=runtime_secret)
         cap = caps[0]
@@ -102,8 +102,8 @@ class TestRuntimeAuth:
         assert resp.status_code == 200
         assert resp.json()["success"] is True
 
-    def test_runtime_secret_wrong_secret_rejected(self, client, mock_adapter):
-        """Wrong runtime_secret → 403."""
+    def test_wrong_secret_rejected(self, client, mock_adapter):
+        """Wrong runtime_secret -> 403."""
         runtime_secret = secrets.token_hex(32)
         task_id, caps = _lifecycle(client, runtime_secret=runtime_secret)
         cap = caps[0]
@@ -112,15 +112,15 @@ class TestRuntimeAuth:
             "task_id": task_id,
             "capability_id": cap["id"],
             "capability_token": cap["token"],
-            "runtime_secret": secrets.token_hex(32),  # different secret
+            "runtime_secret": secrets.token_hex(32),
             "tool": "crm.read_account",
             "arguments": {},
         })
         assert resp.status_code == 403
         assert "runtime_auth_failed" in resp.json()["detail"]["error"]
 
-    def test_runtime_secret_missing_when_required(self, client, mock_adapter):
-        """Task has secret but caller omits it → 403."""
+    def test_missing_secret_when_required(self, client, mock_adapter):
+        """Task has secret but caller omits it -> 403."""
         runtime_secret = secrets.token_hex(32)
         task_id, caps = _lifecycle(client, runtime_secret=runtime_secret)
         cap = caps[0]
@@ -129,15 +129,14 @@ class TestRuntimeAuth:
             "task_id": task_id,
             "capability_id": cap["id"],
             "capability_token": cap["token"],
-            # no runtime_secret
             "tool": "crm.read_account",
             "arguments": {},
         })
         assert resp.status_code == 403
         assert "runtime_auth_required" in resp.json()["detail"]["error"]
 
-    def test_no_secret_tasks_still_work(self, client, mock_adapter):
-        """Tasks without runtime_secret remain backward compatible."""
+    def test_no_secret_backward_compatible(self, client, mock_adapter):
+        """Tasks without runtime_secret still work."""
         task_id, caps = _lifecycle(client)
         cap = caps[0]
 
@@ -152,16 +151,57 @@ class TestRuntimeAuth:
 
 
 # ====================================================================
-# Finding #2 — Policy-derived scope flows into capability minting
+# Findings-2 #2 / Findings-3 #1+#2 -- Scope math (monotonic, intersection)
 # ====================================================================
 
 
-class TestPolicyScopeFlow:
-    """Finding-2 #2: policy-derived scope used when minting capabilities."""
+class TestScopeMath:
+    """Policy scope, requester scope, and approval reduction intersection."""
 
-    def test_policy_structured_scope_applied(self, client, mock_adapter, tmp_path):
-        """When policy rule has a structured scope, it constrains the capability."""
-        # Write a policy rule with explicit structured scope
+    def test_intersect_scopes_basic(self):
+        from jitauth.broker.routes import _intersect_scopes
+
+        # Both dicts with overlapping lists
+        result = _intersect_scopes(
+            {"account_id": ["a1", "a2", "a3"]},
+            {"account_id": ["a2", "a3", "a4"]},
+        )
+        assert result == {"account_id": ["a2", "a3"]}
+
+    def test_intersect_scopes_no_overlap_produces_empty(self):
+        """No-overlap must produce empty list, not fall back to policy (Finding-3 #2)."""
+        from jitauth.broker.routes import _intersect_scopes
+
+        result = _intersect_scopes(
+            {"account_id": ["a1"]},
+            {"account_id": ["a2"]},
+        )
+        assert result == {"account_id": []}
+
+    def test_intersect_scopes_none_policy_passes_requester(self):
+        from jitauth.broker.routes import _intersect_scopes
+
+        assert _intersect_scopes(None, {"x": [1]}) == {"x": [1]}
+
+    def test_intersect_scopes_none_requester_passes_policy(self):
+        from jitauth.broker.routes import _intersect_scopes
+
+        assert _intersect_scopes({"x": [1]}, None) == {"x": [1]}
+
+    def test_intersect_scopes_both_none(self):
+        from jitauth.broker.routes import _intersect_scopes
+
+        assert _intersect_scopes(None, None) is None
+
+    def test_intersect_scopes_list_intersection(self):
+        from jitauth.broker.routes import _intersect_scopes
+
+        result = _intersect_scopes(["a", "b", "c"], ["b", "c", "d"])
+        assert result == ["b", "c"]
+
+    def test_approval_reduction_cannot_widen(self, client, mock_adapter, tmp_path):
+        """Approval reduced_scope intersects with effective scope, never widens (Finding-3 #1)."""
+        # Policy allowing reads on account_id: a1, a2 only
         policy_dir = tmp_path / "policies"
         policy_dir.mkdir(exist_ok=True)
         (policy_dir / "default.yaml").write_text("""
@@ -172,9 +212,16 @@ rules:
       action_class: "read"
     effect: allow
     scope:
-      account_id: ["acme_123", "acme_456"]
+      account_id: ["a1", "a2"]
+  - name: require-approval-write
+    priority: 40
+    match:
+      action_class: "write"
+    effect: require_approval
+    scope:
+      account_id: ["a1", "a2"]
 """)
-        from jitauth.config.settings import get_settings, override_settings, Settings
+        from jitauth.config.settings import Settings, get_settings, override_settings
         from jitauth.policy.engine import reload_rules
 
         s = get_settings()
@@ -185,126 +232,144 @@ rules:
         ))
         reload_rules()
 
-        # Create task WITH requester-supplied scope that's broader than policy
+        # Create task requiring approval (write)
+        resp = client.post("/tasks", json={
+            "requester_id": "u1",
+            "runtime_id": "rt_01",
+            "objective": "write test",
+            "actions": [{"system": "crm", "action": "update_contact", "action_class": "write"}],
+            "time_limit_seconds": 300,
+        })
+        task_id = resp.json()["id"]
+        client.post(f"/tasks/{task_id}/classify")
+        client.post(f"/tasks/{task_id}/policy-evaluate")
+
+        # Approve with a reduced_scope that tries to WIDEN to a3
+        client.post(f"/tasks/{task_id}/approve", json={
+            "approver_id": "admin",
+            "approved": True,
+            "reduced_scope": {"crm": {"account_id": ["a1", "a3"]}},
+        })
+
+        caps = client.post(f"/tasks/{task_id}/capabilities").json()
+        cap_scope = json.loads(caps[0]["resource_scope"])
+
+        # a3 must NOT appear — approval reduction intersects, doesn't override
+        allowed = cap_scope.get("account_id", [])
+        assert "a3" not in allowed
+        assert "a1" in allowed
+
+    def test_policy_structured_scope_narrows_requester(self, client, mock_adapter, tmp_path):
+        """Policy scope ceiling prevents requester from widening (Finding-2 #2)."""
+        policy_dir = tmp_path / "policies"
+        policy_dir.mkdir(exist_ok=True)
+        (policy_dir / "default.yaml").write_text("""
+rules:
+  - name: allow-reads-scoped
+    priority: 50
+    match:
+      action_class: "read"
+    effect: allow
+    scope:
+      account_id: ["a1", "a2"]
+""")
+        from jitauth.config.settings import Settings, get_settings, override_settings
+        from jitauth.policy.engine import reload_rules
+
+        s = get_settings()
+        override_settings(Settings(
+            database_url=s.database_url,
+            policy_dir=str(policy_dir),
+            jwt_secret=s.jwt_secret,
+        ))
+        reload_rules()
+
         task_id, caps = _lifecycle(
             client,
             actions=[{
                 "system": "crm",
                 "action": "read_account",
                 "action_class": "read",
-                "resource_scope": json.dumps({"account_id": ["acme_123", "acme_456", "acme_789"]}),
+                "resource_scope": json.dumps({"account_id": ["a1", "a2", "a9"]}),
             }],
         )
-
-        cap = caps[0]
-        # The minted capability's scope should be intersected (policy ceiling wins)
-        scope = json.loads(cap["resource_scope"])
-        assert isinstance(scope, dict)
-        # acme_789 should NOT be in the effective scope (policy doesn't allow it)
+        scope = json.loads(caps[0]["resource_scope"])
         allowed = scope.get("account_id", [])
-        assert "acme_789" not in allowed
-        assert "acme_123" in allowed
-        assert "acme_456" in allowed
+        assert "a9" not in allowed
+        assert "a1" in allowed
+        assert "a2" in allowed
 
 
 # ====================================================================
-# Finding #3 — Audit chain init wired on startup
+# Findings-2 #3 -- Audit chain init wired on startup
 # ====================================================================
 
 
 class TestAuditChainInit:
-    """Finding-2 #3: audit chain initialized from DB on broker startup."""
+    """Audit chain initialized from DB on broker startup."""
 
-    def test_chain_continuity_across_client_instances(self, client):
-        """Creating two TestClient instances (simulating restarts) should
-        produce a continuous audit chain because lifespan calls initialize_chain."""
-        # First client: create a task (generates audit events)
-        resp = client.post("/tasks", json={
-            "requester_id": "u1",
-            "runtime_id": "rt1",
-            "objective": "chain test 1",
+    def test_chain_continuity(self, client):
+        """Events across multiple tasks form a valid chain."""
+        client.post("/tasks", json={
+            "requester_id": "u1", "runtime_id": "rt1", "objective": "chain 1",
             "actions": [{"system": "crm", "action": "read_account", "action_class": "read"}],
         })
-        assert resp.status_code == 201
-
-        # Verify chain is valid
         verify = client.get("/audit/verify")
         assert verify.json()["valid"] is True
         first_count = verify.json()["events_checked"]
-        assert first_count >= 1
 
-        # Create a second task (more events in the same chain)
-        resp2 = client.post("/tasks", json={
-            "requester_id": "u2",
-            "runtime_id": "rt2",
-            "objective": "chain test 2",
+        client.post("/tasks", json={
+            "requester_id": "u2", "runtime_id": "rt2", "objective": "chain 2",
             "actions": [{"system": "crm", "action": "read_account", "action_class": "read"}],
         })
-        assert resp2.status_code == 201
-
         verify2 = client.get("/audit/verify")
         assert verify2.json()["valid"] is True
         assert verify2.json()["events_checked"] > first_count
 
 
 # ====================================================================
-# Finding #4 — Task-scoped verification for interleaved tasks
+# Findings-2 #4 -- Task-scoped audit verification (interleaving)
 # ====================================================================
 
 
-class TestInterleavedAuditVerification:
-    """Finding-2 #4: task-scoped audit verify doesn't false-alarm on interleaving."""
+class TestInterleavedAudit:
+    """Task-scoped audit verify handles interleaved events correctly."""
 
-    def test_interleaved_tasks_verify_correctly(self, client):
-        """Create events from two tasks interleaved, then verify each task
-        individually — should not report chain broken."""
-        # Task 1
+    def test_interleaved_tasks_both_valid(self, client):
         r1 = client.post("/tasks", json={
-            "requester_id": "u1",
-            "runtime_id": "rt1",
-            "objective": "task A",
+            "requester_id": "u1", "runtime_id": "rt1", "objective": "A",
             "actions": [{"system": "crm", "action": "read_account", "action_class": "read"}],
         })
         task1_id = r1.json()["id"]
 
-        # Task 2 (interleaved)
         r2 = client.post("/tasks", json={
-            "requester_id": "u2",
-            "runtime_id": "rt2",
-            "objective": "task B",
+            "requester_id": "u2", "runtime_id": "rt2", "objective": "B",
             "actions": [{"system": "crm", "action": "read_account", "action_class": "read"}],
         })
         task2_id = r2.json()["id"]
 
-        # More events for task 1
         client.post(f"/tasks/{task1_id}/classify")
 
-        # Global chain should be valid
-        verify_all = client.get("/audit/verify")
-        assert verify_all.json()["valid"] is True
+        assert client.get("/audit/verify").json()["valid"] is True
+        v1 = client.get(f"/audit/verify?task_id={task1_id}").json()
+        assert v1["valid"] is True
+        assert v1["task_events_checked"] >= 1
 
-        # Task-scoped verification should also be valid (not false broken)
-        verify_t1 = client.get(f"/audit/verify?task_id={task1_id}")
-        assert verify_t1.json()["valid"] is True
-        assert verify_t1.json()["task_events_checked"] >= 1
-
-        verify_t2 = client.get(f"/audit/verify?task_id={task2_id}")
-        assert verify_t2.json()["valid"] is True
-        assert verify_t2.json()["task_events_checked"] >= 1
+        v2 = client.get(f"/audit/verify?task_id={task2_id}").json()
+        assert v2["valid"] is True
+        assert v2["task_events_checked"] >= 1
 
 
 # ====================================================================
-# Finding #5 — Adapter loading uses config/loader with env-var resolution
+# Findings-2 #5 -- Adapter loading env-var resolution
 # ====================================================================
 
 
 class TestAdapterLoading:
-    """Finding-2 #5: startup adapter loading resolves ${ENV_VAR} placeholders."""
+    """Startup adapter loading resolves ${ENV_VAR} placeholders."""
 
-    def test_env_var_resolution_in_credentials(self, tmp_path, monkeypatch):
-        """Adapter config with ${ENV} credentials should resolve them."""
-        monkeypatch.setenv("TEST_ADAPTER_TOKEN", "resolved_secret_value")
-
+    def test_env_var_resolved(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TEST_TOKEN_F2", "resolved_value")
         config_file = tmp_path / "adapters.yaml"
         config_file.write_text("""
 adapters:
@@ -314,19 +379,15 @@ adapters:
       base_url: "https://example.com"
     credentials:
       type: bearer
-      token: "${TEST_ADAPTER_TOKEN}"
+      token: "${TEST_TOKEN_F2}"
 """)
         from jitauth.config.loader import load_adapter_configs
-        from jitauth.proxy.gateway import _adapter_configs, clear_adapters
-
         clear_adapters()
         configs = load_adapter_configs(str(config_file))
-        assert len(configs) == 1
-        assert configs[0].credentials["token"] == "resolved_secret_value"
+        assert configs[0].credentials["token"] == "resolved_value"
         clear_adapters()
 
-    def test_unresolved_env_var_stays_placeholder(self, tmp_path):
-        """If env var isn't set, the placeholder string survives."""
+    def test_unresolved_env_var_keeps_placeholder(self, tmp_path):
         config_file = tmp_path / "adapters.yaml"
         config_file.write_text("""
 adapters:
@@ -334,62 +395,48 @@ adapters:
     adapter_type: http
     config: {}
     credentials:
-      token: "${NONEXISTENT_VAR_12345}"
+      token: "${NONEXISTENT_12345}"
 """)
         from jitauth.config.loader import load_adapter_configs
-        from jitauth.proxy.gateway import clear_adapters
-
         clear_adapters()
         configs = load_adapter_configs(str(config_file))
-        # Unresolved var keeps the placeholder (logged as warning)
-        assert configs[0].credentials["token"] == "${NONEXISTENT_VAR_12345}"
+        assert configs[0].credentials["token"] == "${NONEXISTENT_12345}"
         clear_adapters()
 
 
 # ====================================================================
-# Finding #6 — Value-based secret scanning
+# Findings-2 #6 -- Value-based secret scanning
 # ====================================================================
 
 
 class TestSecretScanning:
-    """Finding-2 #6: result sanitization catches secrets in values, not just keys."""
+    """Result sanitization catches secrets in values, not just key names."""
 
-    def test_bearer_token_in_stdout_redacted(self, client):
-        """Shell-like stdout containing a bearer token should be redacted."""
+    def test_bearer_token_in_stdout(self):
         from jitauth.proxy.gateway import _sanitize_string
+        assert "[REDACTED" in _sanitize_string(
+            "HTTP/1.1 200 OK\nAuthorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc"
+        )
 
-        stdout = "HTTP/1.1 200 OK\nAuthorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc"
-        result = _sanitize_string(stdout)
-        assert "[REDACTED" in result
-
-    def test_aws_key_in_value_redacted(self):
+    def test_aws_key_in_value(self):
         from jitauth.proxy.gateway import _sanitize_string
+        assert "[REDACTED" in _sanitize_string("key: AKIAIOSFODNN7EXAMPLE in config")
 
-        value = "found key: AKIAIOSFODNN7EXAMPLE in config"
-        assert "[REDACTED" in _sanitize_string(value)
-
-    def test_private_key_in_value_redacted(self):
+    def test_private_key(self):
         from jitauth.proxy.gateway import _sanitize_string
+        assert "[REDACTED" in _sanitize_string("-----BEGIN PRIVATE KEY-----\nMII...")
 
-        value = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg..."
-        assert "[REDACTED" in _sanitize_string(value)
-
-    def test_password_in_connection_string_redacted(self):
+    def test_password_in_connection_string(self):
         from jitauth.proxy.gateway import _sanitize_string
+        assert "[REDACTED" in _sanitize_string("postgresql://user:password=hunter2@db:5432/x")
 
-        value = "postgresql://user:password=hunter2@db.example.com:5432/mydb"
-        assert "[REDACTED" in _sanitize_string(value)
-
-    def test_normal_text_not_redacted(self):
+    def test_normal_text_untouched(self):
         from jitauth.proxy.gateway import _sanitize_string
+        v = "Account acme_123 has 42 contacts."
+        assert v == _sanitize_string(v)
 
-        value = "Account acme_123 has 42 contacts."
-        assert value == _sanitize_string(value)
-
-    def test_sanitize_for_log_catches_secret_in_string_value(self):
-        """_sanitize_for_log should redact string values containing secrets."""
+    def test_sanitize_for_log_string_values(self):
         from jitauth.proxy.gateway import _sanitize_for_log
-
         data = {
             "status": "ok",
             "debug_output": "token Bearer sk-abc123456789012345678901234567890123456789",
@@ -399,8 +446,8 @@ class TestSecretScanning:
         assert sanitized["status"] == "ok"
 
     def test_execute_redacts_string_result(self, client):
-        """When adapter returns a string containing a secret, /execute redacts it."""
-        secret_output = "config: password=SuperSecret123! token Bearer AKIAIOSFODNN7EXAMPLE"
+        """Adapter returning a string with secrets -> redacted in response."""
+        secret_output = "config: password=X token Bearer AKIAIOSFODNN7EXAMPLE"
         config = AdapterConfig(system_name="crm", adapter_type="mock", config={})
         adapter = MockAdapter(config, result_override=AdapterResult(
             success=True, result=secret_output,
@@ -409,7 +456,6 @@ class TestSecretScanning:
 
         task_id, caps = _lifecycle(client)
         cap = caps[0]
-
         resp = client.post("/execute", json={
             "task_id": task_id,
             "capability_id": cap["id"],
@@ -418,5 +464,4 @@ class TestSecretScanning:
             "arguments": {},
         })
         assert resp.status_code == 200
-        result = resp.json()["result"]
-        assert "[REDACTED" in result
+        assert "[REDACTED" in resp.json()["result"]

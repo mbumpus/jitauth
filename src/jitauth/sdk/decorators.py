@@ -42,6 +42,7 @@ def jitauth_tool(
     time_limit_seconds: int = 120,
     auto_approve: bool = False,
     approver_id: str | None = None,
+    runtime_secret: str | None = None,
 ):
     """Decorator that wraps a tool function with JITAuth governance.
 
@@ -59,6 +60,7 @@ def jitauth_tool(
         time_limit_seconds: Task TTL
         auto_approve: Auto-approve if policy requires it
         approver_id: Approver ID for auto-approval
+        runtime_secret: Session secret for runtime authentication
     """
 
     def decorator(func: Callable) -> Callable:
@@ -80,6 +82,7 @@ def jitauth_tool(
                 time_limit_seconds=time_limit_seconds,
                 auto_approve=auto_approve,
                 approver_id=approver_id,
+                runtime_secret=runtime_secret,
             ) as task:
                 # Execute through the broker — capability enforcement,
                 # credential injection, and audit all happen server-side

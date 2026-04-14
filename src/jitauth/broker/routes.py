@@ -322,11 +322,14 @@ def request_capabilities(task_id: str, db: Session = Depends(get_db)):
         # Intersect: policy scope is the ceiling, requester scope narrows
         effective_scope = _intersect_scopes(policy_scope, requester_scope)
 
-        # Apply approval reductions if present (can only further narrow)
+        # Apply approval reductions — must only narrow, never widen.
+        # Intersect the reduction with the already-computed effective scope
+        # so a broad reduced_scope payload cannot exceed the policy ceiling
+        # (Finding-3 #1).
         if reduced_scope:
             system_reduction = reduced_scope.get(system)
             if system_reduction:
-                effective_scope = system_reduction
+                effective_scope = _intersect_scopes(effective_scope, system_reduction)
 
         merged_scope = json.dumps(effective_scope) if effective_scope is not None else None
 
@@ -566,13 +569,22 @@ def _intersect_scopes(
     policy_scope: dict | list | str | None,
     requester_scope: dict | list | str | None,
 ) -> dict | list | str | None:
-    """Intersect policy-derived scope (ceiling) with requester-supplied scope.
+    """Intersect two scopes monotonically: the result is always ≤ both inputs.
 
     Rules:
-      - If policy_scope is None → use requester_scope (policy has no restriction)
-      - If requester_scope is None → use policy_scope (requester requested everything)
-      - If both are dicts → for each key, keep only values present in both
-      - Otherwise → prefer the more restrictive (policy_scope)
+      - If either is None → use the other (None = "no constraint")
+      - If both are dicts → per-field intersection
+        - Both have a field as lists → keep only common values (may be empty)
+        - Only one side has a field → use that side's constraint
+        - Both non-list → policy wins (ceiling)
+      - If both are lists → keep only common entries
+      - Otherwise → policy ceiling wins (narrower by assumption)
+
+    An empty list for a field means "no values allowed" — the gateway's
+    _enforce_scope will reject any argument for that field.
+
+    This function is monotonic: the output can never contain a value that
+    was absent from both inputs (Finding-3 #2).
     """
     if policy_scope is None:
         return requester_scope
@@ -586,22 +598,24 @@ def _intersect_scopes(
             p_vals = policy_scope.get(field)
             r_vals = requester_scope.get(field)
             if p_vals is None:
+                # Policy has no constraint on this field — requester narrows
                 result[field] = r_vals
             elif r_vals is None:
+                # Requester has no constraint — policy narrows
                 result[field] = p_vals
             elif isinstance(p_vals, list) and isinstance(r_vals, list):
-                intersection = [v for v in r_vals if v in p_vals]
-                if intersection:
-                    result[field] = intersection
-                else:
-                    # No overlap — use policy (more restrictive)
-                    result[field] = p_vals
+                # True intersection — may be empty, which means "nothing allowed"
+                result[field] = [v for v in r_vals if v in p_vals]
             else:
-                # Non-list: policy wins (ceiling)
+                # Non-list: policy ceiling wins
                 result[field] = p_vals
         return result
 
-    # Incompatible types or lists: policy ceiling wins
+    # Both are lists: true set intersection
+    if isinstance(policy_scope, list) and isinstance(requester_scope, list):
+        return [v for v in requester_scope if v in policy_scope]
+
+    # Incompatible types: policy ceiling wins
     return policy_scope
 
 

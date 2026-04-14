@@ -76,6 +76,7 @@ class TaskHandle:
     task_id: str
     capabilities: list[dict]
     _client: JITAuthClient
+    _runtime_secret: str | None = None
     _cap_map: dict[str, str] = field(default_factory=dict, init=False)
     _cap_token_map: dict[str, str] = field(default_factory=dict, init=False)
 
@@ -125,6 +126,8 @@ class TaskHandle:
             "tool": tool,
             "arguments": arguments or {},
         }
+        if self._runtime_secret:
+            payload["runtime_secret"] = self._runtime_secret
         if expected_effect:
             payload["expected_effect"] = expected_effect
         if idempotency_key:
@@ -220,6 +223,7 @@ class JITAuthClient:
         allow_destructive: bool = False,
         auto_approve: bool = False,
         approver_id: str | None = None,
+        runtime_secret: str | None = None,
     ):
         """Create and manage a governed task.
 
@@ -242,6 +246,9 @@ class JITAuthClient:
             allow_destructive: Whether to allow destructive actions (default False)
             auto_approve: If True and task requires approval, auto-approve with approver_id
             approver_id: ID to use for auto-approval
+            runtime_secret: Session secret for runtime authentication.
+                When provided, the broker binds execution to this runtime
+                and requires the same secret on every /execute call.
 
         Yields:
             TaskHandle with minted capabilities
@@ -254,7 +261,7 @@ class JITAuthClient:
         task_id = None
         try:
             # 1. Create task
-            resp = await self._post("/tasks", {
+            create_payload: dict[str, Any] = {
                 "requester_type": requester_type,
                 "requester_id": requester,
                 "runtime_id": self.runtime_id,
@@ -265,7 +272,10 @@ class JITAuthClient:
                 "max_actions": max_actions,
                 "time_limit_seconds": time_limit_seconds,
                 "allow_destructive": allow_destructive,
-            })
+            }
+            if runtime_secret:
+                create_payload["runtime_secret"] = runtime_secret
+            resp = await self._post("/tasks", create_payload)
             if resp.status_code != 201:
                 raise JITAuthError(f"Failed to create task: {resp.text}", code="create_failed")
 
@@ -334,6 +344,7 @@ class JITAuthClient:
                 task_id=task_id,
                 capabilities=capabilities,
                 _client=self,
+                _runtime_secret=runtime_secret,
             )
             yield handle
 
