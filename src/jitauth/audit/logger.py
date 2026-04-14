@@ -38,7 +38,10 @@ def initialize_chain(db: Session) -> None:
     """
     last_event = (
         db.query(AuditEvent)
-        .order_by(AuditEvent.chain_seq.desc().nulls_last())
+        .order_by(
+            AuditEvent.chain_seq.desc().nulls_last(),
+            AuditEvent.timestamp.desc(),
+        )
         .first()
     )
     if last_event:
@@ -59,9 +62,14 @@ def _get_previous_hash_locked(db: Session) -> tuple[str | None, int]:
     Returns:
         (prev_hash, next_seq) — prev_hash is None for the first event.
     """
+    # Order: highest chain_seq first; NULL chain_seq rows fall back to
+    # timestamp.  This is safe both before and after backfill.
     last_event = (
         db.query(AuditEvent)
-        .order_by(AuditEvent.chain_seq.desc().nulls_last())
+        .order_by(
+            AuditEvent.chain_seq.desc().nulls_last(),
+            AuditEvent.timestamp.desc(),
+        )
         .with_for_update()
         .first()
     )
@@ -139,9 +147,12 @@ def verify_audit_chain(db: Session, task_id: str | None = None) -> dict:
     """
     # Always verify the full global chain for correctness.
     # Order by chain_seq (preferred) with timestamp fallback for pre-v0.5.0 rows.
+    # Order: NULL chain_seq (legacy pre-v0.5.0 rows) first by timestamp,
+    # then numbered rows by chain_seq.  After migration backfill, all rows
+    # have chain_seq and NULLS FIRST is a no-op.
     all_events = (
         db.query(AuditEvent)
-        .order_by(AuditEvent.chain_seq.asc().nulls_last(), AuditEvent.timestamp.asc())
+        .order_by(AuditEvent.chain_seq.asc().nulls_first(), AuditEvent.timestamp.asc())
         .all()
     )
     if not all_events:

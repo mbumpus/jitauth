@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-04-14
+
+### Fixed
+- **Audit chain backfill on upgrade** (Finding-6 #1): Migration `001` now backfills `chain_seq` for all pre-existing audit rows in timestamp order, preserving the original hash chain. Logger ordering uses `NULLS FIRST` / `NULLS LAST` correctly so legacy rows always sort before new rows even if backfill hasn't run yet.
+- **Fresh-database bootstrap via Alembic** (Finding-6 #2): Added baseline migration `000` that creates the complete schema from scratch. `alembic upgrade head` now works against an empty database without requiring a prior `create_all()` call.
+
+### Added
+- Migration `000_baseline_schema`: creates all 9 tables with indexes and constraints
+- Upgrade documentation in migration docstrings (stamp flow for existing deployments)
+
+### Changed
+- Migration `001` now depends on `000` (was previously `down_revision = None`)
+- Logger `_get_previous_hash_locked` and `verify_audit_chain` use secondary timestamp sort for deterministic ordering when `chain_seq` values are mixed
+
 ## [0.5.0] - 2026-04-14
 
 ### Security
@@ -120,6 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shell adapter rejects dangerous characters and unexpected parameters
 - Audit hash chain detects post-hoc tampering
 
+[0.5.1]: https://github.com/digitalego/jitauth/releases/tag/v0.5.1
 [0.5.0]: https://github.com/digitalego/jitauth/releases/tag/v0.5.0
 [0.4.0]: https://github.com/digitalego/jitauth/releases/tag/v0.4.0
 [0.3.0]: https://github.com/digitalego/jitauth/releases/tag/v0.3.0
