@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "jitauth": {
+      "command": "jitauth",
+      "args": ["mcp-serve", "--adapters", "adapters.yaml"],
+      "env": {
+        "JITAUTH_HOST": "127.0.0.1",
+        "JITAUTH_PORT": "8700",
+        "JITAUTH_CRM_TOKEN": "your-crm-token-here",
+        "JITAUTH_EMAIL_TOKEN": "your-email-token-here",
+        "JITAUTH_CALENDAR_KEY": "your-calendar-key-here"
+      }
+    }
+  }
+}

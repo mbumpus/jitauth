@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jitauth"
+version = "0.1.0"
+description = "Just-in-time, task-scoped authentication and authorization for AI agents"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Mike", email = "admin@digitalego.ai" },
+]
+keywords = ["ai", "agents", "auth", "security", "capability", "broker", "jit"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries",
+    "Framework :: FastAPI",
+]
+
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
+    "pydantic>=2.6.0",
+    "pydantic-settings>=2.1.0",
+    "pyjwt[crypto]>=2.8.0",
+    "click>=8.1.0",
+    "pyyaml>=6.0.0",
+    "python-ulid>=3.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.27.0",
+    "ruff>=0.3.0",
+    "pre-commit>=3.6.0",
+]
+mcp = [
+    "mcp>=1.0.0",
+]
+postgres = [
+    "asyncpg>=0.29.0",
+    "psycopg2-binary>=2.9.0",
+]
+
+[project.scripts]
+jitauth = "jitauth.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/digitalego/jitauth"
+Documentation = "https://github.com/digitalego/jitauth#readme"
+Repository = "https://github.com/digitalego/jitauth"
+Issues = "https://github.com/digitalego/jitauth/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jitauth"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = ["B008"]  # Allow Depends() in argument defaults (FastAPI convention)
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

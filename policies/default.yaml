@@ -1,0 +1,63 @@
+# JITAuth Default Policy Rules
+# Deny-by-default: if no rule matches, the task is denied.
+# Rules are evaluated in priority order (lower number = higher priority).
+
+rules:
+  # --- Deny rules (highest priority) ---
+
+  - name: deny-destructive-default
+    priority: 10
+    match:
+      risk_tier: "tier_4"
+    effect: deny
+    reason: "Destructive/privileged actions denied by default"
+
+  - name: deny-untrusted-writes
+    priority: 15
+    match:
+      action_class: ["write", "delete"]
+      runtime_trust_tier: "untrusted"
+    effect: deny
+    reason: "Untrusted runtimes cannot perform write or delete operations"
+
+  # --- Approval rules ---
+
+  - name: require-approval-external-send
+    priority: 30
+    match:
+      action_class: "send"
+    effect: require_approval
+    reason: "External send requires human approval"
+
+  - name: require-approval-publish
+    priority: 31
+    match:
+      action_class: "publish"
+    effect: require_approval
+    reason: "Publish actions require human approval"
+
+  - name: require-approval-tier3
+    priority: 35
+    match:
+      risk_tier: "tier_3"
+    effect: require_approval
+    reason: "Material changes require human approval"
+
+  # --- Allow rules (lower priority) ---
+
+  - name: allow-reads
+    priority: 50
+    match:
+      action_class: "read"
+      risk_tier: ["tier_0", "tier_1"]
+    effect: allow
+    scope: minimal
+
+  - name: allow-bounded-writes
+    priority: 60
+    match:
+      action_class: "write"
+      risk_tier: "tier_2"
+      runtime_trust_tier: ["low", "medium", "high"]
+    effect: allow
+    scope: minimal

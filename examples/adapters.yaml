@@ -1,0 +1,104 @@
+# Example adapter configuration for JITAuth.
+#
+# Each adapter defines a target system, its available actions,
+# and the credentials the broker will inject server-side.
+#
+# The agent never sees these credentials.
+
+adapters:
+  # --- CRM (HTTP REST API) ---
+  - system_name: crm
+    adapter_type: http
+    config:
+      base_url: "https://api.example-crm.com/v2"
+      timeout_seconds: 30
+      actions:
+        read_account:
+          method: GET
+          path: "/accounts/${account_id}"
+        read_contacts:
+          method: GET
+          path: "/accounts/${account_id}/contacts"
+        update_contact:
+          method: PATCH
+          path: "/contacts/${contact_id}"
+          body_template:
+            field: "${field}"
+            value: "${value}"
+    credentials:
+      type: bearer
+      token: "${JITAUTH_CRM_TOKEN}"
+
+  # --- Email (HTTP REST API) ---
+  - system_name: email
+    adapter_type: http
+    config:
+      base_url: "https://api.example-email.com/v1"
+      timeout_seconds: 15
+      actions:
+        create_draft:
+          method: POST
+          path: "/drafts"
+          body_template:
+            to: "${to}"
+            subject: "${subject}"
+            body: "${body}"
+        send_email:
+          method: POST
+          path: "/send"
+          body_template:
+            to: "${to}"
+            subject: "${subject}"
+            body: "${body}"
+    credentials:
+      type: bearer
+      token: "${JITAUTH_EMAIL_TOKEN}"
+
+  # --- Calendar (HTTP REST API) ---
+  - system_name: calendar
+    adapter_type: http
+    config:
+      base_url: "https://api.example-calendar.com/v1"
+      timeout_seconds: 15
+      actions:
+        read_availability:
+          method: GET
+          path: "/calendars/${calendar_id}/availability"
+        create_event:
+          method: POST
+          path: "/calendars/${calendar_id}/events"
+          body_template:
+            title: "${title}"
+            start: "${start_time}"
+            end: "${end_time}"
+            attendees: "${attendees}"
+    credentials:
+      type: api_key
+      header: "X-Calendar-Key"
+      key: "${JITAUTH_CALENDAR_KEY}"
+
+  # --- Dev Tools (Shell) ---
+  - system_name: devtools
+    adapter_type: shell
+    config:
+      working_dir: /opt/app
+      timeout_seconds: 30
+      commands:
+        git_log:
+          template: "git log --oneline -n ${count}"
+          params:
+            count:
+              type: int
+              min: 1
+              max: 100
+              default: 10
+        git_status:
+          template: "git status --short"
+          params: {}
+        list_files:
+          template: "ls -la ${path}"
+          params:
+            path:
+              type: string
+              pattern: "^[a-zA-Z0-9_./-]+$"
+              max_length: 200

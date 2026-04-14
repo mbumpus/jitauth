@@ -1,0 +1,51 @@
+# JITAuth production Docker Compose configuration.
+#
+# Usage:
+#   cp .env.example .env   # Edit with your secrets
+#   docker compose up -d
+#
+# This runs the JITAuth broker backed by Postgres.
+
+services:
+  broker:
+    build: .
+    ports:
+      - "${JITAUTH_PORT:-8700}:8700"
+    environment:
+      JITAUTH_HOST: "0.0.0.0"
+      JITAUTH_PORT: "8700"
+      JITAUTH_DATABASE_URL: "postgresql://${POSTGRES_USER:-jitauth}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-jitauth}"
+      JITAUTH_JWT_SECRET: "${JITAUTH_JWT_SECRET}"
+      JITAUTH_JWT_ALGORITHM: "${JITAUTH_JWT_ALGORITHM:-HS256}"
+      JITAUTH_DEBUG: "${JITAUTH_DEBUG:-false}"
+      JITAUTH_POLICY_DIR: "/app/policies"
+    volumes:
+      - ./policies:/app/policies:ro
+      - ./adapters.yaml:/app/adapters.yaml:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8700/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-jitauth}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB:-jitauth}"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jitauth}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:
