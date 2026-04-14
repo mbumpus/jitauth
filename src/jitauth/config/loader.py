@@ -86,6 +86,7 @@ def load_adapter_configs(config_path: str | Path) -> list[AdapterConfig]:
             credentials=resolved_creds,
             redact_keys=set(adapter_def.get("redact_keys", [])),
             redact_result=adapter_def.get("redact_result", False),
+            resource_keys=set(adapter_def.get("resource_keys", [])),
         )
         configs.append(config)
         register_adapter_config(config)

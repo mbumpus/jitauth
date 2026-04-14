@@ -52,6 +52,7 @@ _adapter_configs: dict[str, AdapterConfig] = {}
 def register_adapter(adapter: BaseAdapter) -> None:
     """Register a tool adapter with the gateway."""
     _adapters[adapter.system_name] = adapter
+    _adapter_configs[adapter.system_name] = adapter.config
     logger.info("Registered adapter: %s (%s)", adapter.system_name, type(adapter).__name__)
 
 
@@ -178,14 +179,13 @@ async def execute_tool_call(
     from jitauth.core.models import Task
     task_obj = db.get(Task, task_id)
     if task_obj and task_obj.runtime_secret_hash:
-        import hashlib
         if not runtime_secret:
             raise GatewayError(
                 "This task requires runtime authentication (runtime_secret)",
                 "runtime_auth_required",
             )
-        caller_hash = hashlib.sha256(runtime_secret.encode()).hexdigest()
-        if caller_hash != task_obj.runtime_secret_hash:
+        from jitauth.core.crypto import verify_secret
+        if not verify_secret(runtime_secret, task_obj.runtime_secret_hash):
             raise GatewayError(
                 "Runtime secret does not match the task's registered runtime",
                 "runtime_auth_failed",
@@ -377,6 +377,12 @@ def _get_credential_for_system(system: str) -> dict | None:
     return None
 
 
+_DEFAULT_RESOURCE_KEYS: frozenset[str] = frozenset({
+    "account_id", "contact_id", "calendar_id", "resource_id",
+    "user_id", "org_id", "project_id", "id",
+})
+
+
 def _enforce_scope(cap: Capability, arguments: dict[str, Any]) -> None:
     """Enforce resource scope constraints on tool call arguments.
 
@@ -415,11 +421,13 @@ def _enforce_scope(cap: Capability, arguments: dict[str, Any]) -> None:
                         )
 
     elif isinstance(scope, list):
-        # List scope: check common resource-identifying argument keys
-        resource_keys = {
-            "account_id", "contact_id", "calendar_id", "resource_id",
-            "user_id", "org_id", "project_id", "id",
-        }
+        # List scope: check resource-identifying argument keys.
+        # Per-adapter resource_keys override the defaults.
+        adapter_config = _adapter_configs.get(cap.target_system)
+        resource_keys = (
+            adapter_config.resource_keys if adapter_config and adapter_config.resource_keys
+            else _DEFAULT_RESOURCE_KEYS
+        )
         for key in resource_keys:
             if key in arguments:
                 arg_val = str(arguments[key])

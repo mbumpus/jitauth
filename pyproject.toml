@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jitauth"
-version = "0.3.0"
+version = "0.4.0"
 description = "Just-in-time, task-scoped authentication and authorization for AI agents"
 readme = "README.md"
 license = "MIT"

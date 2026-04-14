@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-04-14
+
+### Security
+- **scrypt KDF replaces SHA-256 for runtime_secret** (Finding-4 #2): `runtime_secret_hash` now uses `hashlib.scrypt` with random salt (OWASP-recommended parameters: N=16384, r=8, p=1). Stored format is `salt_hex$scrypt_hex`. Legacy SHA-256 hashes are still accepted during verification for zero-downtime migration. Column widened from `String(64)` to `String(130)`.
+- **Audit hash chain is now DB-level** (Finding-4 #1): `write_audit_event` queries the most recent event hash from the database on each write instead of relying on process-local state. This makes the chain correct under multi-worker deployments and eliminates the startup initialization requirement. `initialize_chain()` and `reset_chain()` are now no-ops for backward compatibility.
+- **Configurable per-adapter resource keys for list-scope enforcement** (Finding-4 #3): `AdapterConfig` now accepts a `resource_keys` field specifying which argument keys are treated as resource identifiers during list-scope enforcement. Adapters without explicit keys fall back to built-in defaults. Loader reads `resource_keys` from adapter YAML config.
+
+### Added
+- `jitauth.core.crypto` module with `hash_secret()` and `verify_secret()` (scrypt + legacy SHA-256 fallback)
+- `_DEFAULT_RESOURCE_KEYS` frozenset in gateway for fallback list-scope enforcement
+- `resource_keys` field on `AdapterConfig` dataclass
+- `register_adapter()` now also populates `_adapter_configs` for consistent scope enforcement
+- 17 new tests covering findings-4 hardening (157 total, was 140)
+
 ## [0.3.0] - 2026-04-14
 
 ### Fixed
@@ -90,6 +104,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shell adapter rejects dangerous characters and unexpected parameters
 - Audit hash chain detects post-hoc tampering
 
+[0.4.0]: https://github.com/digitalego/jitauth/releases/tag/v0.4.0
 [0.3.0]: https://github.com/digitalego/jitauth/releases/tag/v0.3.0
 [0.2.0]: https://github.com/digitalego/jitauth/releases/tag/v0.2.0
 [0.1.0]: https://github.com/digitalego/jitauth/releases/tag/v0.1.0

@@ -26,6 +26,7 @@ class AdapterConfig:
     credentials: dict = field(default_factory=dict)
     redact_keys: set[str] = field(default_factory=set)  # Extra keys to redact for this system
     redact_result: bool = False  # If True, store "[REDACTED]" instead of full result
+    resource_keys: set[str] = field(default_factory=set)  # Argument keys treated as resource identifiers for list-scope enforcement
 
 
 class BaseAdapter(ABC):

@@ -3,6 +3,11 @@
 Each audit event can include a SHA-256 hash of the previous event,
 creating a lightweight tamper-evident chain. This isn't a blockchain —
 it's a simple integrity check that makes silent log modification detectable.
+
+The chain is maintained at DB level: each write queries the most recent
+event's hash from the database rather than relying on process-local state.
+This is correct under multi-worker deployments (each worker sees the same
+DB) and survives restarts without an explicit initialization step.
 """
 
 from __future__ import annotations
@@ -20,26 +25,39 @@ from jitauth.core.models import AuditEvent
 
 logger = logging.getLogger(__name__)
 
-_last_event_hash: str | None = None
-
 
 def initialize_chain(db: Session) -> None:
     """Initialize the hash chain from the last event in the database.
 
-    Call this on broker startup to resume the chain after restarts.
+    This is now a no-op kept for backward compatibility — the chain is
+    maintained at DB level. Previously required on startup; now optional.
     """
-    global _last_event_hash
     last_event = (
         db.query(AuditEvent)
         .order_by(AuditEvent.timestamp.desc())
         .first()
     )
     if last_event:
-        _last_event_hash = _hash_event(last_event)
-        logger.info("Audit chain initialized from event %s", last_event.id)
+        logger.info("Audit chain: %d events, last is %s",
+                     db.query(AuditEvent).count(), last_event.id)
     else:
-        _last_event_hash = None
-        logger.info("Audit chain initialized (empty)")
+        logger.info("Audit chain: empty")
+
+
+def _get_previous_hash(db: Session) -> str | None:
+    """Query the hash of the most recent audit event from the DB.
+
+    This replaces the process-local _last_event_hash global, making
+    the chain correct under concurrent workers.
+    """
+    last_event = (
+        db.query(AuditEvent)
+        .order_by(AuditEvent.timestamp.desc())
+        .first()
+    )
+    if last_event is None:
+        return None
+    return _hash_event(last_event)
 
 
 def write_audit_event(
@@ -51,6 +69,12 @@ def write_audit_event(
 ) -> AuditEvent:
     """Write an audit event with hash chaining.
 
+    The previous-event hash is read from the DB on each write, not from
+    process-local state.  This means the chain is correct even if multiple
+    broker workers are writing concurrently (with a DB that supports
+    serializable reads, e.g. Postgres), and survives restarts without
+    needing an explicit initialization call.
+
     Args:
         db: Database session
         event_type: Event type string (e.g., "task_created", "tool_invoked")
@@ -61,12 +85,11 @@ def write_audit_event(
     Returns:
         The created AuditEvent
     """
-    global _last_event_hash
     settings = get_settings()
 
     prev_hash = None
     if settings.audit_hash_chain:
-        prev_hash = _last_event_hash
+        prev_hash = _get_previous_hash(db)
 
     event = AuditEvent(
         id=new_id(),
@@ -78,10 +101,6 @@ def write_audit_event(
         timestamp=datetime.now(timezone.utc),
     )
     db.add(event)
-
-    # Compute hash of this event for the chain
-    if settings.audit_hash_chain:
-        _last_event_hash = _hash_event(event)
 
     return event
 
@@ -159,6 +178,9 @@ def _hash_event(event: AuditEvent) -> str:
 
 
 def reset_chain() -> None:
-    """Reset the hash chain. For testing."""
-    global _last_event_hash
-    _last_event_hash = None
+    """Reset the hash chain. For testing.
+
+    Now a no-op — the chain is DB-level. Kept for backward
+    compatibility with test fixtures that call it.
+    """
+    pass

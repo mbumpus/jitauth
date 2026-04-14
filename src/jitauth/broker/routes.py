@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -63,10 +62,11 @@ def health():
 def create_task(req: TaskCreate, db: Session = Depends(get_db)):
     now = datetime.now(timezone.utc)
 
-    # Hash the runtime session secret if provided (Finding-2 #1)
+    # Hash the runtime session secret if provided (Finding-2 #1, scrypt KDF)
     secret_hash = None
     if req.runtime_secret:
-        secret_hash = hashlib.sha256(req.runtime_secret.encode()).hexdigest()
+        from jitauth.core.crypto import hash_secret
+        secret_hash = hash_secret(req.runtime_secret)
 
     task = Task(
         id=new_id(),
