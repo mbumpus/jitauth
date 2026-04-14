@@ -4,10 +4,13 @@ Each audit event can include a SHA-256 hash of the previous event,
 creating a lightweight tamper-evident chain. This isn't a blockchain —
 it's a simple integrity check that makes silent log modification detectable.
 
-The chain is maintained at DB level: each write queries the most recent
-event's hash from the database rather than relying on process-local state.
-This is correct under multi-worker deployments (each worker sees the same
-DB) and survives restarts without an explicit initialization step.
+Concurrency safety
+------------------
+Chain writes are serialized at the DB level.  ``write_audit_event`` uses
+``SELECT … FOR UPDATE`` (Postgres) or an equivalent row-lock to prevent
+two concurrent writers from reading the same "latest event" and forking
+the chain.  A monotonic ``chain_seq`` column provides deterministic
+ordering independent of timestamp granularity.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from jitauth.config.settings import get_settings
@@ -34,30 +38,36 @@ def initialize_chain(db: Session) -> None:
     """
     last_event = (
         db.query(AuditEvent)
-        .order_by(AuditEvent.timestamp.desc())
+        .order_by(AuditEvent.chain_seq.desc().nulls_last())
         .first()
     )
     if last_event:
-        logger.info("Audit chain: %d events, last is %s",
-                     db.query(AuditEvent).count(), last_event.id)
+        logger.info("Audit chain: %d events, last is %s (seq %s)",
+                     db.query(AuditEvent).count(), last_event.id, last_event.chain_seq)
     else:
         logger.info("Audit chain: empty")
 
 
-def _get_previous_hash(db: Session) -> str | None:
-    """Query the hash of the most recent audit event from the DB.
+def _get_previous_hash_locked(db: Session) -> tuple[str | None, int]:
+    """Query the hash and next sequence number, holding a row lock.
 
-    This replaces the process-local _last_event_hash global, making
-    the chain correct under concurrent workers.
+    Uses ``with_for_update()`` so that concurrent writers on the same
+    DB connection (e.g. Postgres) are serialized.  SQLite is inherently
+    single-writer, so the lock is a no-op there but the sequence logic
+    still provides deterministic ordering.
+
+    Returns:
+        (prev_hash, next_seq) — prev_hash is None for the first event.
     """
     last_event = (
         db.query(AuditEvent)
-        .order_by(AuditEvent.timestamp.desc())
+        .order_by(AuditEvent.chain_seq.desc().nulls_last())
+        .with_for_update()
         .first()
     )
     if last_event is None:
-        return None
-    return _hash_event(last_event)
+        return None, 1
+    return _hash_event(last_event), (last_event.chain_seq or 0) + 1
 
 
 def write_audit_event(
@@ -69,11 +79,10 @@ def write_audit_event(
 ) -> AuditEvent:
     """Write an audit event with hash chaining.
 
-    The previous-event hash is read from the DB on each write, not from
-    process-local state.  This means the chain is correct even if multiple
-    broker workers are writing concurrently (with a DB that supports
-    serializable reads, e.g. Postgres), and survives restarts without
-    needing an explicit initialization call.
+    The previous-event hash is read under a row lock (``FOR UPDATE``),
+    so concurrent writers are serialized at the DB level.  A monotonic
+    ``chain_seq`` provides deterministic ordering independent of
+    timestamp granularity.
 
     Args:
         db: Database session
@@ -88,11 +97,13 @@ def write_audit_event(
     settings = get_settings()
 
     prev_hash = None
+    next_seq = None
     if settings.audit_hash_chain:
-        prev_hash = _get_previous_hash(db)
+        prev_hash, next_seq = _get_previous_hash_locked(db)
 
     event = AuditEvent(
         id=new_id(),
+        chain_seq=next_seq,
         task_id=task_id,
         event_type=event_type,
         actor=actor,
@@ -108,6 +119,10 @@ def write_audit_event(
 def verify_audit_chain(db: Session, task_id: str | None = None) -> dict:
     """Verify the integrity of the audit chain.
 
+    Events are ordered by ``chain_seq`` (the DB-serialized monotonic
+    sequence) rather than ``timestamp``, so the verification is
+    deterministic even when events have identical timestamps.
+
     The hash chain is global (events from all tasks are interleaved in a
     single chain).  When *task_id* is supplied we still verify the **global**
     chain but report only the events belonging to that task.  This avoids
@@ -122,10 +137,11 @@ def verify_audit_chain(db: Session, task_id: str | None = None) -> dict:
             "task_events_checked": int | None,  # only when task_id given
         }
     """
-    # Always verify the full global chain for correctness
+    # Always verify the full global chain for correctness.
+    # Order by chain_seq (preferred) with timestamp fallback for pre-v0.5.0 rows.
     all_events = (
         db.query(AuditEvent)
-        .order_by(AuditEvent.timestamp.asc())
+        .order_by(AuditEvent.chain_seq.asc().nulls_last(), AuditEvent.timestamp.asc())
         .all()
     )
     if not all_events:

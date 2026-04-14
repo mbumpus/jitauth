@@ -236,6 +236,7 @@ class AuditEvent(Base):
     __tablename__ = "audit_events"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    chain_seq: Mapped[int | None] = mapped_column(Integer, unique=True, index=True)  # monotonic DB sequence for chain ordering
     task_id: Mapped[str | None] = mapped_column(String(26), index=True)
     event_type: Mapped[str] = mapped_column(String(100), index=True)
     actor: Mapped[str] = mapped_column(String(255))

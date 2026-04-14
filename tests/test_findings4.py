@@ -95,7 +95,7 @@ class TestDBAuditChain:
 
     def test_get_previous_hash_queries_db(self, client):
         """_get_previous_hash returns the hash of the latest event from DB."""
-        from jitauth.audit.logger import _get_previous_hash, _hash_event
+        from jitauth.audit.logger import _get_previous_hash_locked, _hash_event
         from jitauth.db.session import get_session_factory
         from jitauth.core.models import AuditEvent
 
@@ -110,7 +110,9 @@ class TestDBAuditChain:
             last_event = db.query(AuditEvent).order_by(AuditEvent.timestamp.desc()).first()
             assert last_event is not None
             expected_hash = _hash_event(last_event)
-            assert _get_previous_hash(db) == expected_hash
+            prev_hash, next_seq = _get_previous_hash_locked(db)
+            assert prev_hash == expected_hash
+            assert next_seq == (last_event.chain_seq or 0) + 1
         finally:
             db.close()
 

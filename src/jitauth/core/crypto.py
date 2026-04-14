@@ -8,6 +8,7 @@ Uses only stdlib hashlib — no external dependencies required.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
 
 
@@ -54,7 +55,7 @@ def verify_secret(secret: str, stored_hash: str) -> bool:
     if "$" not in stored_hash:
         # Legacy SHA-256 hash — verify and caller should consider re-hashing
         legacy_hash = hashlib.sha256(secret.encode()).hexdigest()
-        return legacy_hash == stored_hash
+        return hmac.compare_digest(legacy_hash, stored_hash)
 
     parts = stored_hash.split("$", 1)
     if len(parts) != 2:
@@ -74,5 +75,5 @@ def verify_secret(secret: str, stored_hash: str) -> bool:
         p=_SCRYPT_P,
         dklen=_SCRYPT_DKLEN,
     )
-    # Constant-time comparison
-    return dk == expected
+    # Constant-time comparison to prevent timing side-channels
+    return hmac.compare_digest(dk, expected)

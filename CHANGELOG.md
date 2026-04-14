@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-04-14
+
+### Security
+- **Audit chain writes are now DB-serialized** (Finding-5 #1): `write_audit_event` uses `SELECT … FOR UPDATE` to hold a row lock on the latest event while computing the next hash and inserting. Concurrent writers are serialized at the database level, preventing chain forks. A new `chain_seq` monotonic integer column provides deterministic ordering independent of timestamp granularity.
+- **Constant-time secret comparison** (Finding-5 #3): `verify_secret()` now uses `hmac.compare_digest()` for both scrypt and legacy SHA-256 paths, preventing timing side-channel attacks.
+
+### Added
+- Alembic migration infrastructure (`alembic.ini`, `migrations/env.py`, `migrations/versions/`)
+- Migration `001_v050_schema_hardening`: widens `tasks.runtime_secret_hash` from `VARCHAR(64)` to `VARCHAR(130)` and adds `audit_events.chain_seq` column
+- `chain_seq` column on `AuditEvent` model for monotonic DB-serialized chain ordering
+- Upgrade notes: run `alembic upgrade head` after updating to v0.5.0 on existing deployments
+
+### Changed
+- `verify_audit_chain` now orders by `chain_seq` (with `timestamp` fallback for pre-v0.5.0 rows)
+- `_get_previous_hash` renamed to `_get_previous_hash_locked`; returns `(prev_hash, next_seq)` tuple
+
 ## [0.4.0] - 2026-04-14
 
 ### Security
@@ -104,6 +120,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shell adapter rejects dangerous characters and unexpected parameters
 - Audit hash chain detects post-hoc tampering
 
+[0.5.0]: https://github.com/digitalego/jitauth/releases/tag/v0.5.0
 [0.4.0]: https://github.com/digitalego/jitauth/releases/tag/v0.4.0
 [0.3.0]: https://github.com/digitalego/jitauth/releases/tag/v0.3.0
 [0.2.0]: https://github.com/digitalego/jitauth/releases/tag/v0.2.0
