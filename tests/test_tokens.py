@@ -56,6 +56,22 @@ class TestMintToken:
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
         assert payload["jitauth:resource_scope"] == "account:acme_123"
 
+    def test_mint_with_naive_datetimes(self):
+        """Naive datetimes (SQLite round-trip) should be treated as UTC."""
+        now_utc = datetime.now(timezone.utc)
+        # Simulate SQLite round-trip: strip timezone info
+        naive_issued = now_utc.replace(tzinfo=None)
+        naive_expires = (now_utc + timedelta(minutes=5)).replace(tzinfo=None)
+
+        token = _mint_test_token(issued_at=naive_issued, expires_at=naive_expires)
+        # Should verify without error — naive treated as UTC
+        payload = verify_capability_token(token)
+        assert payload["sub"] == "cap_test_123"
+
+        # iat should be within 2 seconds of the expected UTC timestamp
+        expected_iat = int(now_utc.timestamp())
+        assert abs(payload["iat"] - expected_iat) <= 2
+
     def test_mint_excludes_resource_scope_when_none(self):
         token = _mint_test_token(resource_scope=None)
         settings = get_settings()

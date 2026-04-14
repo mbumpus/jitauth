@@ -68,6 +68,15 @@ class TaskResponse(BaseModel):
 # ---------- Policy ----------
 
 
+class ActionDecisionResponse(BaseModel):
+    system: str
+    action: str
+    action_class: str
+    rule_name: str
+    effect: PolicyEffect
+    reason: str | None
+
+
 class PolicyDecisionResponse(BaseModel):
     id: str
     task_id: str
@@ -75,6 +84,7 @@ class PolicyDecisionResponse(BaseModel):
     effect: PolicyEffect
     reason: str | None
     evaluated_at: datetime
+    action_decisions: list[ActionDecisionResponse] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -111,6 +121,7 @@ class CapabilityResponse(BaseModel):
 class ExecuteRequest(BaseModel):
     task_id: str = Field(min_length=1, max_length=26)
     capability_id: str = Field(min_length=1, max_length=26)
+    capability_token: str = Field(min_length=1, max_length=4096)
     tool: str = Field(min_length=3, max_length=255, pattern=r"^[\w.-]+$")
     arguments: dict = Field(default_factory=dict)
     expected_effect: str | None = Field(default=None, max_length=1000)
@@ -143,6 +154,20 @@ class ApprovalResponse(BaseModel):
     decided_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# ---------- Task Completion ----------
+
+
+class CompleteTaskRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=1000)
+    completed_by: str = Field(min_length=1, max_length=255)
+
+
+class CompleteTaskResponse(BaseModel):
+    task_id: str
+    status: TaskStatus
+    capabilities_expired: int
 
 
 # ---------- Revocation ----------

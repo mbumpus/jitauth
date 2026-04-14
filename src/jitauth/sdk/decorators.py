@@ -81,9 +81,13 @@ def jitauth_tool(
                 auto_approve=auto_approve,
                 approver_id=approver_id,
             ) as task:
-                # Execute the original function — it runs under governance
-                # The capability exists and is tracked even for local execution
-                result = await func(**kwargs)
+                # Execute through the broker — capability enforcement,
+                # credential injection, and audit all happen server-side
+                result = await task.execute(
+                    f"{system}.{action}",
+                    arguments=kwargs,
+                    expected_effect=f"{func.__name__}({', '.join(f'{k}={v!r}' for k, v in kwargs.items())})",
+                )
                 logger.info(
                     "Governed call %s.%s completed for task %s",
                     system,

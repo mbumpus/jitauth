@@ -24,8 +24,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from jitauth.core.id import new_id
+from jitauth.core.json_fields import parse_json
 from jitauth.core.models import (
-    AuditEvent,
     Capability,
     CapabilityStatus,
     ToolInvocation,
@@ -104,7 +104,9 @@ def clear_adapters() -> None:
 
 async def execute_tool_call(
     db: Session,
+    task_id: str,
     capability_id: str,
+    capability_token: str,
     tool: str,
     arguments: dict[str, Any],
     expected_effect: str | None = None,
@@ -116,7 +118,9 @@ async def execute_tool_call(
 
     Args:
         db: Database session
+        task_id: The task this execution belongs to
         capability_id: The capability authorizing this call
+        capability_token: Signed JWT capability token for verification
         tool: Tool identifier (e.g., "crm.read_account")
         arguments: Tool call arguments
         expected_effect: Human-readable description of expected effect
@@ -128,18 +132,60 @@ async def execute_tool_call(
     Raises:
         GatewayError: If the capability is invalid or the call is rejected
     """
-    # 1. Validate capability
+    # 0. Verify the capability token (cryptographic proof of issuance)
+    from jitauth.core.tokens import TokenError, verify_capability_token
+
+    try:
+        token_claims = verify_capability_token(capability_token)
+    except TokenError as e:
+        raise GatewayError(
+            f"Capability token verification failed: {e}",
+            f"token_{e.code}",
+        ) from e
+
+    # Verify token claims match the request
+    if token_claims["sub"] != capability_id:
+        raise GatewayError(
+            "Token subject does not match capability_id",
+            "token_binding_mismatch",
+        )
+    if token_claims["jitauth:task_id"] != task_id:
+        raise GatewayError(
+            "Token task_id claim does not match request task_id",
+            "token_binding_mismatch",
+        )
+
+    # 1. Validate capability in DB (for revocation and call counting)
     cap = db.get(Capability, capability_id)
     if cap is None:
         raise GatewayError("Capability not found", "capability_not_found")
 
     _validate_capability(cap)
 
+    # 1b. Verify task binding — caller's task_id must match DB
+    if cap.task_id != task_id:
+        raise GatewayError(
+            f"Task '{task_id}' does not own capability '{capability_id}'",
+            "task_mismatch",
+        )
+
+    # 1c. Verify token runtime claim matches DB capability
+    if token_claims["jitauth:runtime_id"] != cap.runtime_id:
+        raise GatewayError(
+            "Token runtime_id does not match capability runtime",
+            "token_binding_mismatch",
+        )
+    if token_claims["jitauth:target_system"] != cap.target_system:
+        raise GatewayError(
+            "Token target_system does not match capability",
+            "token_binding_mismatch",
+        )
+
     # 2. Parse tool identifier → system + action
     system, action = _parse_tool(tool)
 
     # 3. Check action is allowed by capability
-    allowed_actions = json.loads(cap.allowed_actions)
+    allowed_actions = cap.allowed_actions_list
     if action not in allowed_actions:
         raise GatewayError(
             f"Action '{action}' not allowed by capability. Allowed: {allowed_actions}",
@@ -153,6 +199,9 @@ async def execute_tool_call(
             "system_mismatch",
         )
 
+    # 4b. Enforce resource scope
+    _enforce_scope(cap, arguments)
+
     # 5. Get adapter
     adapter = get_adapter(system)
     if adapter is None:
@@ -161,11 +210,15 @@ async def execute_tool_call(
             "no_adapter",
         )
 
-    # 6. Check idempotency
+    # 6. Check idempotency (scoped to task + capability)
     if idempotency_key:
         existing = (
             db.query(ToolInvocation)
-            .filter(ToolInvocation.idempotency_key == idempotency_key)
+            .filter(
+                ToolInvocation.task_id == task_id,
+                ToolInvocation.capability_id == capability_id,
+                ToolInvocation.idempotency_key == idempotency_key,
+            )
             .first()
         )
         if existing:
@@ -173,7 +226,7 @@ async def execute_tool_call(
                 "invocation_id": existing.id,
                 "tool": tool,
                 "success": existing.success,
-                "result": json.loads(existing.result_summary) if existing.result_summary else None,
+                "result": parse_json(existing.result_summary),
                 "error": existing.error,
             }
 
@@ -189,43 +242,61 @@ async def execute_tool_call(
     credential = _get_credential_for_system(system)
     adapter_result = await adapter.execute(action, arguments, credential)
 
-    # 9. Record invocation
+    # Collect per-adapter redaction config
+    adapter_config = _adapter_configs.get(system)
+    extra_redact = adapter_config.redact_keys if adapter_config else set()
+    redact_full_result = adapter_config.redact_result if adapter_config else False
+
+    # 9. Record invocation (sanitize both arguments and stored result)
+    sanitized_args = _sanitize_for_log(arguments, extra_keys=extra_redact)
+    if redact_full_result:
+        stored_result = '{"_redacted": true}'
+    elif isinstance(adapter_result.result, dict):
+        stored_result = json.dumps(_sanitize_for_log(adapter_result.result, extra_keys=extra_redact))
+    elif adapter_result.result is not None:
+        stored_result = json.dumps(adapter_result.result)
+    else:
+        stored_result = None
+
     invocation = ToolInvocation(
         id=new_id(),
         task_id=cap.task_id,
         capability_id=capability_id,
         tool=tool,
-        arguments=json.dumps(_sanitize_for_log(arguments)),
+        arguments=json.dumps(sanitized_args),
         expected_effect=expected_effect,
         idempotency_key=idempotency_key,
-        result_summary=json.dumps(adapter_result.result) if adapter_result.result else None,
+        result_summary=stored_result,
         success=adapter_result.success,
         error=adapter_result.error,
     )
     db.add(invocation)
 
-    # 10. Audit event
-    audit = AuditEvent(
-        id=new_id(),
-        task_id=cap.task_id,
-        event_type="tool_invoked",
-        actor=f"runtime:{cap.runtime_id}",
-        details=json.dumps({
-            "tool": tool,
-            "success": adapter_result.success,
-            "capability_id": capability_id,
-            "calls_used": cap.calls_used,
-            "calls_max": cap.max_calls,
-        }),
-    )
-    db.add(audit)
+    # 10. Audit event (hash-chained)
+    from jitauth.audit.logger import write_audit_event
+
+    write_audit_event(db, "tool_invoked", f"runtime:{cap.runtime_id}",
+                      task_id=cap.task_id, details={
+                          "tool": tool,
+                          "success": adapter_result.success,
+                          "capability_id": capability_id,
+                          "calls_used": cap.calls_used,
+                          "calls_max": cap.max_calls,
+                      })
     db.commit()
+
+    # Sanitize result before returning to runtime (prevent credential leakage)
+    sanitized_result = (
+        _sanitize_for_log(adapter_result.result, extra_keys=extra_redact)
+        if isinstance(adapter_result.result, dict)
+        else adapter_result.result
+    )
 
     return {
         "invocation_id": invocation.id,
         "tool": tool,
         "success": adapter_result.success,
-        "result": adapter_result.result,
+        "result": sanitized_result,
         "error": adapter_result.error,
     }
 
@@ -281,15 +352,92 @@ def _get_credential_for_system(system: str) -> dict | None:
     return None
 
 
-def _sanitize_for_log(data: dict) -> dict:
-    """Remove sensitive fields from arguments before logging."""
-    sensitive_keys = {"password", "secret", "token", "api_key", "credential", "key"}
+def _enforce_scope(cap: Capability, arguments: dict[str, Any]) -> None:
+    """Enforce resource scope constraints on tool call arguments.
+
+    If the capability has a resource_scope, arguments that reference
+    resources (by common identifier patterns) must fall within the
+    allowed scope. This is the mechanism by which least privilege is
+    enforced at execution time — not just at policy evaluation.
+
+    Scope format:
+        - JSON list of allowed resource patterns (e.g. ["account:acme_*"])
+        - JSON dict with per-field constraints (e.g. {"account_id": ["acme_123"]})
+        - None means no scope constraint (all arguments allowed)
+    """
+    scope = cap.resource_scope_parsed
+    if scope is None:
+        return
+
+    if isinstance(scope, dict):
+        # Dict scope: keys map to lists of allowed values
+        for field_name, allowed_values in scope.items():
+            if field_name in arguments:
+                arg_val = str(arguments[field_name])
+                if isinstance(allowed_values, list):
+                    if arg_val not in [str(v) for v in allowed_values]:
+                        raise GatewayError(
+                            f"Argument '{field_name}' value '{arg_val}' "
+                            f"not in allowed scope: {allowed_values}",
+                            "scope_violation",
+                        )
+                elif isinstance(allowed_values, str):
+                    if arg_val != allowed_values:
+                        raise GatewayError(
+                            f"Argument '{field_name}' value '{arg_val}' "
+                            f"does not match scope: {allowed_values}",
+                            "scope_violation",
+                        )
+
+    elif isinstance(scope, list):
+        # List scope: check common resource-identifying argument keys
+        resource_keys = {
+            "account_id", "contact_id", "calendar_id", "resource_id",
+            "user_id", "org_id", "project_id", "id",
+        }
+        for key in resource_keys:
+            if key in arguments:
+                arg_val = str(arguments[key])
+                matched = any(
+                    arg_val == str(s) or (
+                        isinstance(s, str) and s.endswith("*")
+                        and arg_val.startswith(s[:-1])
+                    )
+                    for s in scope
+                )
+                if not matched:
+                    raise GatewayError(
+                        f"Resource '{key}={arg_val}' not in "
+                        f"allowed scope: {scope}",
+                        "scope_violation",
+                    )
+
+
+_DEFAULT_SENSITIVE_KEYS = frozenset({
+    "password", "secret", "token", "api_key", "credential", "key",
+    "access_token", "refresh_token", "authorization", "bearer",
+})
+
+
+def _sanitize_for_log(data: dict, extra_keys: set[str] | None = None) -> dict:
+    """Remove sensitive fields from data before logging or returning to runtime.
+
+    Args:
+        data: Dict to sanitize.
+        extra_keys: Additional field names to redact (from per-adapter config).
+    """
+    sensitive = _DEFAULT_SENSITIVE_KEYS | {k.lower() for k in (extra_keys or set())}
     sanitized = {}
     for k, v in data.items():
-        if k.lower() in sensitive_keys:
+        if k.lower() in sensitive:
             sanitized[k] = "[REDACTED]"
         elif isinstance(v, dict):
-            sanitized[k] = _sanitize_for_log(v)
+            sanitized[k] = _sanitize_for_log(v, extra_keys=extra_keys)
+        elif isinstance(v, list):
+            sanitized[k] = [
+                _sanitize_for_log(item, extra_keys=extra_keys) if isinstance(item, dict) else item
+                for item in v
+            ]
         else:
             sanitized[k] = v
     return sanitized

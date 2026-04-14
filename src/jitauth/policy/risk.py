@@ -5,7 +5,7 @@ Maps action classes to risk tiers per spec section 13.
 
 from __future__ import annotations
 
-from jitauth.core.models import ActionClass, RiskTier, Task
+from jitauth.core.models import ActionClass, RiskTier, Task, TaskAction
 
 # Action class → base risk tier mapping
 _ACTION_RISK: dict[ActionClass, RiskTier] = {
@@ -19,6 +19,23 @@ _ACTION_RISK: dict[ActionClass, RiskTier] = {
 
 # Systems that lower read risk to tier_0
 _HARMLESS_READ_SYSTEMS = {"public_docs", "help", "documentation"}
+
+
+def classify_action_risk(action: TaskAction, task: Task) -> RiskTier:
+    """Classify risk tier for a single action.
+
+    Returns the risk tier for this specific action (not the task aggregate).
+    """
+    ac = action.action_class
+    tier = _ACTION_RISK.get(ac, RiskTier.tier_1)
+
+    if ac == ActionClass.read and action.system in _HARMLESS_READ_SYSTEMS:
+        tier = RiskTier.tier_0
+
+    if task.allow_destructive and ac == ActionClass.write:
+        tier = RiskTier.tier_3
+
+    return tier
 
 
 def classify_risk(task: Task) -> tuple[RiskTier, list[str]]:

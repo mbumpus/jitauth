@@ -160,6 +160,23 @@ class Capability(Base):
     task: Mapped[Task] = relationship(back_populates="capabilities")
     invocations: Mapped[list[ToolInvocation]] = relationship(back_populates="capability")
 
+    # --- Typed accessors for JSON fields ---
+
+    @property
+    def allowed_actions_list(self) -> list[str]:
+        from jitauth.core.json_fields import parse_json_list
+        return parse_json_list(self.allowed_actions)
+
+    @allowed_actions_list.setter
+    def allowed_actions_list(self, value: list[str]) -> None:
+        from jitauth.core.json_fields import dump_json
+        self.allowed_actions = dump_json(value)
+
+    @property
+    def resource_scope_parsed(self) -> dict | list | None:
+        from jitauth.core.json_fields import parse_json
+        return parse_json(self.resource_scope)
+
     __table_args__ = (
         Index("ix_capabilities_status", "status"),
         Index("ix_capabilities_expires", "expires_at"),
@@ -194,6 +211,10 @@ class ToolInvocation(Base):
     invoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     capability: Mapped[Capability] = relationship(back_populates="invocations")
+
+    __table_args__ = (
+        Index("ix_invocation_idempotency", "task_id", "capability_id", "idempotency_key"),
+    )
 
 
 class ApprovalRecord(Base):

@@ -23,6 +23,7 @@ from jitauth.core.models import (
     TaskStatus,
 )
 from jitauth.core.schemas import (
+    ActionDecisionResponse,
     ApprovalRequest,
     ApprovalResponse,
     AuditEventResponse,
@@ -148,6 +149,7 @@ def evaluate_policy(task_id: str, db: Session = Depends(get_db)):
     from jitauth.policy.engine import evaluate
 
     decision = evaluate(task)
+    action_decisions = decision.get("action_decisions", [])
 
     pd = PolicyDecision(
         id=new_id(),
@@ -155,11 +157,14 @@ def evaluate_policy(task_id: str, db: Session = Depends(get_db)):
         rule_name=decision["rule_name"],
         effect=decision["effect"],
         reason=decision.get("reason"),
-        computed_scope=json.dumps(decision.get("scope")) if decision.get("scope") else None,
+        computed_scope=json.dumps({
+            "scope": decision.get("scope"),
+            "action_decisions": action_decisions,
+        }),
     )
     db.add(pd)
 
-    # Update task status based on decision
+    # Update task status based on composite decision (most restrictive wins)
     effect = decision["effect"]
     if effect == "allow" or effect == "allow_reduced":
         task.status = TaskStatus.approved
@@ -172,10 +177,35 @@ def evaluate_policy(task_id: str, db: Session = Depends(get_db)):
         "rule": decision["rule_name"],
         "effect": effect,
         "reason": decision.get("reason"),
+        "action_decisions": [
+            {"system": ad["system"], "action": ad["action"], "effect": ad["effect"]}
+            for ad in action_decisions
+        ],
     })
     db.commit()
     db.refresh(pd)
-    return pd
+
+    # Build response with per-action decisions
+    resp = PolicyDecisionResponse(
+        id=pd.id,
+        task_id=pd.task_id,
+        rule_name=pd.rule_name,
+        effect=pd.effect,
+        reason=pd.reason,
+        evaluated_at=pd.evaluated_at,
+        action_decisions=[
+            ActionDecisionResponse(
+                system=ad["system"],
+                action=ad["action"],
+                action_class=ad["action_class"],
+                rule_name=ad["rule_name"],
+                effect=ad["effect"],
+                reason=ad.get("reason"),
+            )
+            for ad in action_decisions
+        ],
+    )
+    return resp
 
 
 # ---------- Approval ----------
@@ -226,19 +256,54 @@ def request_capabilities(task_id: str, db: Session = Depends(get_db)):
     ttl = min(task.time_limit_seconds, settings.default_capability_ttl_seconds)
     caps = []
 
+    # Check for approval reductions
+    reduced_scope = None
+    approval = (
+        db.query(ApprovalRecord)
+        .filter(ApprovalRecord.task_id == task_id, ApprovalRecord.approved.is_(True))
+        .order_by(ApprovalRecord.decided_at.desc())
+        .first()
+    )
+    if approval and approval.reduced_scope:
+        reduced_scope = json.loads(approval.reduced_scope)
+
     # Group actions by target system
     systems: dict[str, list[TaskAction]] = {}
     for action in task.actions:
         systems.setdefault(action.system, []).append(action)
 
     for system, actions in systems.items():
+        # Merge resource scopes from all actions in this system
+        # resource_scope on TaskAction is already a JSON string — parse before merging
+        parsed_scopes = []
+        for a in actions:
+            if a.resource_scope:
+                try:
+                    parsed_scopes.append(json.loads(a.resource_scope))
+                except (json.JSONDecodeError, TypeError):
+                    parsed_scopes.append(a.resource_scope)
+
+        if len(parsed_scopes) == 1:
+            merged_scope = json.dumps(parsed_scopes[0])
+        elif parsed_scopes:
+            merged_scope = json.dumps(parsed_scopes)
+        else:
+            merged_scope = None
+
+        # Apply approval reductions if present
+        if reduced_scope:
+            system_reduction = reduced_scope.get(system)
+            if system_reduction:
+                # Reduced scope narrows: override merged scope
+                merged_scope = json.dumps(system_reduction)
+
         cap = Capability(
             id=new_id(),
             task_id=task_id,
             runtime_id=task.runtime_id,
             target_system=system,
             allowed_actions=json.dumps([a.action for a in actions]),
-            resource_scope=actions[0].resource_scope,  # Use first action's scope
+            resource_scope=merged_scope,
             max_calls=task.max_actions,
             status=CapabilityStatus.active,
             issued_at=now,
@@ -266,7 +331,7 @@ def request_capabilities(task_id: str, db: Session = Depends(get_db)):
             task_id=c.task_id,
             runtime_id=c.runtime_id,
             target_system=c.target_system,
-            allowed_actions=json.loads(c.allowed_actions),
+            allowed_actions=c.allowed_actions_list,
             issued_at=c.issued_at,
             expires_at=c.expires_at,
             resource_scope=c.resource_scope,
@@ -299,7 +364,9 @@ async def execute_tool(req: ExecuteRequest, db: Session = Depends(get_db)):
     try:
         result = await execute_tool_call(
             db=db,
+            task_id=req.task_id,
             capability_id=req.capability_id,
+            capability_token=req.capability_token,
             tool=req.tool,
             arguments=req.arguments,
             expected_effect=req.expected_effect,
@@ -308,9 +375,85 @@ async def execute_tool(req: ExecuteRequest, db: Session = Depends(get_db)):
         return ExecuteResponse(**result)
     except GatewayError as e:
         raise HTTPException(
-            status_code=403 if "not_allowed" in e.code or "revoked" in e.code else 400,
+            status_code=403 if any(
+                k in e.code
+                for k in ("not_allowed", "revoked", "mismatch", "token_")
+            ) else 400,
             detail={"error": e.code, "message": str(e)},
         ) from None
+
+
+# ---------- Task Completion ----------
+
+
+@router.post("/tasks/{task_id}/complete")
+def complete_task(task_id: str, db: Session = Depends(get_db)):
+    """Mark a task as completed and expire all active capabilities."""
+    from jitauth.core.schemas import CompleteTaskResponse
+
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    if task.status != TaskStatus.executing:
+        raise HTTPException(409, f"Task is in state '{task.status}', expected 'executing'")
+
+    now = datetime.now(timezone.utc)
+    task.status = TaskStatus.completed
+
+    # Expire all active capabilities for this task
+    caps = (
+        db.query(Capability)
+        .filter(Capability.task_id == task_id, Capability.status == CapabilityStatus.active)
+        .all()
+    )
+    for cap in caps:
+        cap.status = CapabilityStatus.expired
+        cap.expires_at = now
+
+    _audit(db, task_id, "task_completed", "system", {
+        "capabilities_expired": len(caps),
+    })
+    db.commit()
+    return CompleteTaskResponse(
+        task_id=task_id,
+        status=TaskStatus.completed,
+        capabilities_expired=len(caps),
+    )
+
+
+@router.post("/tasks/{task_id}/fail")
+def fail_task(task_id: str, db: Session = Depends(get_db)):
+    """Mark a task as failed and revoke all active capabilities."""
+    from jitauth.core.schemas import CompleteTaskResponse
+
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    if task.status not in (TaskStatus.executing, TaskStatus.approved, TaskStatus.pending_approval):
+        raise HTTPException(409, f"Task is in state '{task.status}', cannot fail")
+
+    now = datetime.now(timezone.utc)
+    task.status = TaskStatus.failed
+
+    # Revoke all active capabilities for this task
+    caps = (
+        db.query(Capability)
+        .filter(Capability.task_id == task_id, Capability.status == CapabilityStatus.active)
+        .all()
+    )
+    for cap in caps:
+        cap.status = CapabilityStatus.revoked
+        cap.revoked_at = now
+
+    _audit(db, task_id, "task_failed", "system", {
+        "capabilities_revoked": len(caps),
+    })
+    db.commit()
+    return CompleteTaskResponse(
+        task_id=task_id,
+        status=TaskStatus.failed,
+        capabilities_expired=len(caps),
+    )
 
 
 # ---------- Revocation ----------
@@ -363,22 +506,30 @@ def query_audit(
     q = db.query(AuditEvent)
     if task_id:
         q = q.filter(AuditEvent.task_id == task_id)
+    if runtime_id:
+        q = q.filter(AuditEvent.actor.contains(runtime_id))
     if event_type:
         q = q.filter(AuditEvent.event_type == event_type)
     q = q.order_by(AuditEvent.timestamp.desc()).limit(min(limit, 200))
     return q.all()
 
 
+@router.get("/audit/verify")
+def verify_audit(
+    task_id: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Verify the integrity of the audit hash chain."""
+    from jitauth.audit.logger import verify_audit_chain
+
+    return verify_audit_chain(db, task_id=task_id)
+
+
 # ---------- Helpers ----------
 
 
 def _audit(db: Session, task_id: str | None, event_type: str, actor: str, details: dict):
-    """Write an audit event."""
-    event = AuditEvent(
-        id=new_id(),
-        task_id=task_id,
-        event_type=event_type,
-        actor=actor,
-        details=json.dumps(details),
-    )
-    db.add(event)
+    """Write an audit event with hash chaining."""
+    from jitauth.audit.logger import write_audit_event
+
+    write_audit_event(db, event_type, actor, task_id=task_id, details=details)

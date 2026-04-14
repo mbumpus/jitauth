@@ -77,11 +77,14 @@ class TaskHandle:
     capabilities: list[dict]
     _client: JITAuthClient
     _cap_map: dict[str, str] = field(default_factory=dict, init=False)
+    _cap_token_map: dict[str, str] = field(default_factory=dict, init=False)
 
     def __post_init__(self):
-        # Build system → capability_id lookup
+        # Build system → capability_id and system → token lookups
         for cap in self.capabilities:
-            self._cap_map[cap["target_system"]] = cap["id"]
+            system = cap["target_system"]
+            self._cap_map[system] = cap["id"]
+            self._cap_token_map[system] = cap.get("token", "")
 
     async def execute(
         self,
@@ -107,6 +110,7 @@ class TaskHandle:
         """
         system = tool.split(".", 1)[0] if "." in tool else tool
         cap_id = self._cap_map.get(system)
+        cap_token = self._cap_token_map.get(system)
         if not cap_id:
             available = list(self._cap_map.keys())
             raise CapabilityError(
@@ -117,6 +121,7 @@ class TaskHandle:
         payload: dict[str, Any] = {
             "task_id": self.task_id,
             "capability_id": cap_id,
+            "capability_token": cap_token,
             "tool": tool,
             "arguments": arguments or {},
         }

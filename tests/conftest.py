@@ -64,6 +64,10 @@ rules:
     from jitauth.policy.engine import reload_rules
     reload_rules()
 
+    # Reset audit hash chain for each test
+    from jitauth.audit.logger import reset_chain
+    reset_chain()
+
     yield
 
     reset_engine()

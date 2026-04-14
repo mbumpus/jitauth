@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-04-14
+
+### Fixed
+- **Per-action policy evaluation**: Policy engine now evaluates each TaskAction independently with its own risk tier, using most-restrictive-wins composite. Mixed read+write tasks no longer over-restrict reads. (Finding #1)
+- **Capability token verification**: Gateway now cryptographically verifies JWT capability tokens and checks claims (sub, task_id, runtime_id, target_system) match the request before allowing execution. (Finding #2)
+- **Task-capability binding**: Gateway enforces that the caller's task_id matches the capability's task_id in the database, preventing cross-task capability reuse. (Finding #3)
+- **Idempotency scoping**: Idempotency deduplication now scoped to task_id + capability_id + idempotency_key (was global). Added composite index for efficient lookups. (Finding #4)
+- **Decorator bypass**: SDK `@jitauth_tool` decorator now routes through `task.execute()` instead of calling the function directly, ensuring broker enforcement. (Finding #5)
+- **Resource scope enforcement**: New `_enforce_scope()` in gateway validates tool call arguments against capability resource_scope (dict-scope per-field and list-scope with wildcard matching). (Finding #6)
+- **Double JSON encoding**: Capability minting no longer double-encodes resource_scope — parses TaskAction JSON strings before merging. (Finding #7)
+- **O(n²) audit chain verification**: Replaced `events.index(event)` with `enumerate`-based loop in `verify_audit_chain()`. (Finding #15)
+
+### Added
+- `POST /tasks/{task_id}/complete` endpoint — marks task completed, expires all active capabilities
+- `POST /tasks/{task_id}/fail` endpoint — marks task failed, revokes all active capabilities
+- `GET /audit/verify` endpoint — verifies audit hash chain integrity
+- `jitauth.core.json_fields` module — typed wrappers (`parse_json`, `parse_json_list`, `parse_json_dict`, `dump_json`) replacing scattered `json.loads`/`json.dumps` on policy-critical fields
+- Typed property accessors on `Capability` model (`allowed_actions_list`, `resource_scope_parsed`)
+- Per-action risk tier classification (`classify_action_risk()`)
+- Per-adapter configurable redaction (`redact_keys`, `redact_result` on `AdapterConfig`)
+- YAML adapter config loading on startup with redaction settings
+- `adapters_config` setting for pointing to adapter YAML file
+- Audit hash chain initialization from DB on startup (`initialize_chain()`)
+- 15 new tests (token verification, scope enforcement, lifecycle, hash chain, per-action policy)
+
+### Security
+- Gateway sanitizes both stored audit results and runtime-returned results using `_sanitize_for_log` with configurable per-adapter redaction keys
+- Sensitive key detection expanded: `_DEFAULT_SENSITIVE_KEYS` frozenset covers password, secret, token, api_key, credential, key, access_token, refresh_token, authorization, bearer
+- Recursive sanitization now handles nested dicts and lists of dicts
+- Approval-reduced scopes applied during capability minting
+
 ## [0.1.0] - 2026-04-14
 
 ### Added
@@ -37,4 +68,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shell adapter rejects dangerous characters and unexpected parameters
 - Audit hash chain detects post-hoc tampering
 
+[0.2.0]: https://github.com/digitalego/jitauth/releases/tag/v0.2.0
 [0.1.0]: https://github.com/digitalego/jitauth/releases/tag/v0.1.0

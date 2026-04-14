@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     # Policy
     policy_dir: str = "policies"
 
+    # Adapters
+    adapters_config: str | None = None  # Path to adapters YAML config file
+
     # Audit
     audit_hash_chain: bool = True
 

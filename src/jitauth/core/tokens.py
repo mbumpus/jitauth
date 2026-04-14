@@ -12,12 +12,25 @@ issued and has not been tampered with.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import jwt
 
 from jitauth.config.settings import get_settings
+
+
+def _ensure_utc_timestamp(dt: datetime) -> int:
+    """Convert a datetime to a UTC Unix timestamp.
+
+    Handles naive datetimes (e.g. from SQLite round-trip) by assuming
+    they are already UTC. This is critical: datetime.timestamp() treats
+    naive datetimes as local time, which shifts iat/exp claims on
+    non-UTC machines.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
 
 
 class TokenError(Exception):
@@ -61,8 +74,8 @@ def mint_capability_token(
         # Standard JWT claims
         "iss": "jitauth-broker",
         "sub": capability_id,
-        "iat": int(issued_at.timestamp()),
-        "exp": int(expires_at.timestamp()),
+        "iat": _ensure_utc_timestamp(issued_at),
+        "exp": _ensure_utc_timestamp(expires_at),
         # JITAuth-specific claims
         "jitauth:task_id": task_id,
         "jitauth:runtime_id": runtime_id,

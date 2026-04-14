@@ -117,6 +117,67 @@ def test_policy_require_approval_send(client):
     assert data["effect"] == "require_approval"
 
 
+def test_policy_per_action_mixed_read_send(client):
+    """Mixed read+send task: composite effect should be require_approval (most restrictive)."""
+    task_id = _create_task(
+        client,
+        actions=[
+            {"system": "crm", "action": "read_account", "action_class": "read"},
+            {"system": "email", "action": "send_external", "action_class": "send"},
+        ],
+    ).json()["id"]
+    client.post(f"/tasks/{task_id}/classify")
+
+    resp = client.post(f"/tasks/{task_id}/policy-evaluate")
+    assert resp.status_code == 200
+    data = resp.json()
+    # Composite: most restrictive wins — send requires approval
+    assert data["effect"] == "require_approval"
+
+    # Per-action decisions should be present
+    ad = data["action_decisions"]
+    assert len(ad) == 2
+    effects = {(d["action"], d["effect"]) for d in ad}
+    assert ("read_account", "allow") in effects
+    assert ("send_external", "require_approval") in effects
+
+
+def test_policy_per_action_mixed_read_delete(client):
+    """Mixed read+delete task: composite effect should be deny (delete is tier_4)."""
+    task_id = _create_task(
+        client,
+        actions=[
+            {"system": "crm", "action": "read_account", "action_class": "read"},
+            {"system": "database", "action": "drop_table", "action_class": "delete"},
+        ],
+    ).json()["id"]
+    client.post(f"/tasks/{task_id}/classify")
+
+    resp = client.post(f"/tasks/{task_id}/policy-evaluate")
+    data = resp.json()
+    assert data["effect"] == "deny"
+
+    ad = data["action_decisions"]
+    effects = {(d["action"], d["effect"]) for d in ad}
+    assert ("read_account", "allow") in effects
+    assert ("drop_table", "deny") in effects
+
+
+def test_policy_per_action_response_includes_action_details(client):
+    """Per-action decisions should include system, action, and action_class."""
+    task_id = _create_task(client).json()["id"]
+    client.post(f"/tasks/{task_id}/classify")
+
+    resp = client.post(f"/tasks/{task_id}/policy-evaluate")
+    data = resp.json()
+    ad = data["action_decisions"]
+    assert len(ad) == 1
+    assert ad[0]["system"] == "crm"
+    assert ad[0]["action"] == "read_account"
+    assert ad[0]["action_class"] == "read"
+    assert ad[0]["effect"] == "allow"
+
+
 def test_full_happy_path(client):
     """Complete lifecycle: create → classify → policy → capabilities."""
     # Create
@@ -207,3 +268,74 @@ def test_audit_trail(client):
     assert "task_classified" in event_types
     assert "policy_evaluated" in event_types
     assert "capabilities_minted" in event_types
+
+
+def test_complete_task(client):
+    """Completing a task should expire capabilities."""
+    task_id = _create_task(client).json()["id"]
+    client.post(f"/tasks/{task_id}/classify")
+    client.post(f"/tasks/{task_id}/policy-evaluate")
+    caps = client.post(f"/tasks/{task_id}/capabilities").json()
+    assert len(caps) == 1
+
+    resp = client.post(f"/tasks/{task_id}/complete")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "completed"
+    assert data["capabilities_expired"] == 1
+
+    # Task should be completed
+    task = client.get(f"/tasks/{task_id}").json()
+    assert task["status"] == "completed"
+
+
+def test_fail_task(client):
+    """Failing a task should revoke capabilities."""
+    task_id = _create_task(client).json()["id"]
+    client.post(f"/tasks/{task_id}/classify")
+    client.post(f"/tasks/{task_id}/policy-evaluate")
+    caps = client.post(f"/tasks/{task_id}/capabilities").json()
+
+    resp = client.post(f"/tasks/{task_id}/fail")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "failed"
+    assert data["capabilities_expired"] == 1
+
+    task = client.get(f"/tasks/{task_id}").json()
+    assert task["status"] == "failed"
+
+
+def test_complete_wrong_state(client):
+    """Cannot complete a task that isn't executing."""
+    task_id = _create_task(client).json()["id"]
+    resp = client.post(f"/tasks/{task_id}/complete")
+    assert resp.status_code == 409
+
+
+def test_audit_hash_chain_valid(client):
+    """Audit events should form a valid hash chain."""
+    task_id = _create_task(client).json()["id"]
+    client.post(f"/tasks/{task_id}/classify")
+    client.post(f"/tasks/{task_id}/policy-evaluate")
+    client.post(f"/tasks/{task_id}/capabilities")
+
+    resp = client.get("/audit/verify")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["valid"] is True
+    assert data["events_checked"] >= 4  # at least: created, classified, policy, capabilities
+
+
+def test_audit_hash_chain_per_task(client):
+    """Hash chain verification should work filtered by task_id."""
+    task_id = _create_task(client).json()["id"]
+    client.post(f"/tasks/{task_id}/classify")
+    client.post(f"/tasks/{task_id}/policy-evaluate")
+
+    resp = client.get(f"/audit/verify?task_id={task_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    # Per-task chain may have gaps in prev_hash (events for other tasks interleave)
+    # but for a single task the events should be verifiable
+    assert data["events_checked"] >= 3

@@ -124,6 +124,7 @@ class TestCalendarScenario:
         # Mint capabilities
         caps = client.post(f"/tasks/{task_id}/capabilities").json()
         cap_id = caps[0]["id"]
+        cap_token = caps[0]["token"]
 
         # Read availability
         resp = client.post("/execute", json={
@@ -131,6 +132,7 @@ class TestCalendarScenario:
             "capability_id": cap_id,
             "tool": "calendar.read_availability",
             "arguments": {},
+            "capability_token": cap_token,
         })
         assert resp.status_code == 200
         assert "available_slots" in resp.json()["result"]
@@ -141,6 +143,7 @@ class TestCalendarScenario:
             "capability_id": cap_id,
             "tool": "calendar.create_event",
             "arguments": {"title": "Client Meeting", "time": "2026-04-15T10:00"},
+            "capability_token": cap_token,
         })
         assert resp.status_code == 200
         assert resp.json()["result"]["event_id"] == "evt_001"
@@ -184,6 +187,8 @@ class TestCRMLookupScenario:
         # Find CRM capability
         crm_cap = next(c for c in caps if c["target_system"] == "crm")
         email_cap = next(c for c in caps if c["target_system"] == "email")
+        crm_token = crm_cap["token"]
+        email_token = email_cap["token"]
 
         # Read CRM
         resp = client.post("/execute", json={
@@ -191,6 +196,7 @@ class TestCRMLookupScenario:
             "capability_id": crm_cap["id"],
             "tool": "crm.read_account",
             "arguments": {"account_id": "acme_123"},
+            "capability_token": crm_token,
         })
         assert resp.json()["success"]
         assert resp.json()["result"]["name"] == "Acme Corp"
@@ -201,6 +207,7 @@ class TestCRMLookupScenario:
             "capability_id": email_cap["id"],
             "tool": "email.create_draft",
             "arguments": {"to": "client@acme.com", "body": "Following up on our discussion..."},
+            "capability_token": email_token,
         })
         assert resp.json()["success"]
 
@@ -287,6 +294,7 @@ class TestPrivilegeEscalation:
         client.post(f"/tasks/{task_id}/policy-evaluate")
         caps = client.post(f"/tasks/{task_id}/capabilities").json()
         cap_id = caps[0]["id"]
+        cap_token = caps[0]["token"]
 
         # Try to use CRM capability for a different action
         resp = client.post("/execute", json={
@@ -294,6 +302,7 @@ class TestPrivilegeEscalation:
             "capability_id": cap_id,
             "tool": "crm.update_stage",
             "arguments": {"stage": "closed_won"},
+            "capability_token": cap_token,
         })
         assert resp.status_code in (400, 403)
 
@@ -314,6 +323,7 @@ class TestPrivilegeEscalation:
         client.post(f"/tasks/{task_id}/policy-evaluate")
         caps = client.post(f"/tasks/{task_id}/capabilities").json()
         cap_id = caps[0]["id"]
+        cap_token = caps[0]["token"]
 
         # Try to use CRM capability against database
         resp = client.post("/execute", json={
@@ -321,6 +331,7 @@ class TestPrivilegeEscalation:
             "capability_id": cap_id,
             "tool": "database.drop_table",
             "arguments": {"table": "users"},
+            "capability_token": cap_token,
         })
         assert resp.status_code in (400, 403)
 
@@ -349,6 +360,7 @@ class TestRevocationScenario:
         client.post(f"/tasks/{task_id}/policy-evaluate")
         caps = client.post(f"/tasks/{task_id}/capabilities").json()
         cap_id = caps[0]["id"]
+        cap_token = caps[0]["token"]
 
         # First call works
         resp = client.post("/execute", json={
@@ -356,6 +368,7 @@ class TestRevocationScenario:
             "capability_id": cap_id,
             "tool": "crm.read_account",
             "arguments": {"account_id": "123"},
+            "capability_token": cap_token,
         })
         assert resp.status_code == 200
 
@@ -371,6 +384,7 @@ class TestRevocationScenario:
             "capability_id": cap_id,
             "tool": "crm.read_account",
             "arguments": {"account_id": "456"},
+            "capability_token": cap_token,
         })
         assert resp.status_code == 403
 

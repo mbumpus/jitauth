@@ -176,6 +176,7 @@ class TestOversizedPayloads:
             "capability_id": "fake",
             "tool": "sys.action",
             "arguments": nested,
+            "capability_token": "fake.token.value",
         })
         # Should reach gateway validation (not crash)
         assert r.status_code in (400, 403)

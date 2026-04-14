@@ -23,6 +23,25 @@ logger = logging.getLogger(__name__)
 _last_event_hash: str | None = None
 
 
+def initialize_chain(db: Session) -> None:
+    """Initialize the hash chain from the last event in the database.
+
+    Call this on broker startup to resume the chain after restarts.
+    """
+    global _last_event_hash
+    last_event = (
+        db.query(AuditEvent)
+        .order_by(AuditEvent.timestamp.desc())
+        .first()
+    )
+    if last_event:
+        _last_event_hash = _hash_event(last_event)
+        logger.info("Audit chain initialized from event %s", last_event.id)
+    else:
+        _last_event_hash = None
+        logger.info("Audit chain initialized (empty)")
+
+
 def write_audit_event(
     db: Session,
     event_type: str,
@@ -30,7 +49,7 @@ def write_audit_event(
     task_id: str | None = None,
     details: dict | None = None,
 ) -> AuditEvent:
-    """Write an audit event with optional hash chaining.
+    """Write an audit event with hash chaining.
 
     Args:
         db: Database session
@@ -86,11 +105,11 @@ def verify_audit_chain(db: Session, task_id: str | None = None) -> dict:
         return {"valid": True, "events_checked": 0, "first_broken_at": None}
 
     prev_hash = None
-    for event in events:
+    for i, event in enumerate(events):
         if event.prev_event_hash is not None and event.prev_event_hash != prev_hash:
             return {
                 "valid": False,
-                "events_checked": events.index(event) + 1,
+                "events_checked": i + 1,
                 "first_broken_at": event.id,
             }
         prev_hash = _hash_event(event)

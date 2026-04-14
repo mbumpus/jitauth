@@ -12,10 +12,56 @@ from jitauth.broker.routes import router
 from jitauth.db.session import init_db
 
 
+def _load_adapters_from_config() -> None:
+    """Load adapter configurations from YAML file on startup."""
+    import logging
+    from pathlib import Path
+
+    import yaml
+
+    from jitauth.config.settings import get_settings
+    from jitauth.proxy.base import AdapterConfig
+    from jitauth.proxy.gateway import register_adapter_config
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    if not settings.adapters_config:
+        return
+
+    config_path = Path(settings.adapters_config)
+    if not config_path.exists():
+        logger.warning("Adapter config file not found: %s", config_path)
+        return
+
+    try:
+        with open(config_path) as f:
+            doc = yaml.safe_load(f)
+    except Exception as e:
+        logger.error("Failed to load adapter config: %s", e)
+        return
+
+    if not doc or "adapters" not in doc:
+        return
+
+    for adapter_def in doc["adapters"]:
+        config = AdapterConfig(
+            system_name=adapter_def["system_name"],
+            adapter_type=adapter_def["adapter_type"],
+            config=adapter_def.get("config", {}),
+            credentials=adapter_def.get("credentials"),
+            redact_keys=set(adapter_def.get("redact_keys", [])),
+            redact_result=adapter_def.get("redact_result", False),
+        )
+        register_adapter_config(config)
+        logger.info("Loaded adapter config: %s (%s)", config.system_name, config.adapter_type)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize DB on startup."""
+    """Initialize DB and load configs on startup."""
     init_db()
+    _load_adapters_from_config()
     yield
 
 

@@ -83,12 +83,14 @@ def test_execute_happy_path(client, mock_adapter):
     """Full lifecycle: create task → policy → capability → execute tool call."""
     task_id, caps = _create_and_approve_task(client)
     cap_id = caps[0]["id"]
+    cap_token = caps[0]["token"]
 
     resp = client.post("/execute", json={
         "task_id": task_id,
         "capability_id": cap_id,
         "tool": "crm.read_account",
         "arguments": {"account_id": "456"},
+        "capability_token": cap_token,
     })
     assert resp.status_code == 200
     data = resp.json()
@@ -103,6 +105,7 @@ def test_execute_happy_path(client, mock_adapter):
 def test_execute_with_expected_effect(client, mock_adapter):
     task_id, caps = _create_and_approve_task(client)
     cap_id = caps[0]["id"]
+    cap_token = caps[0]["token"]
 
     resp = client.post("/execute", json={
         "task_id": task_id,
@@ -110,6 +113,7 @@ def test_execute_with_expected_effect(client, mock_adapter):
         "tool": "crm.read_account",
         "arguments": {"account_id": "456"},
         "expected_effect": "Read account details for client 456",
+        "capability_token": cap_token,
     })
     assert resp.status_code == 200
 
@@ -121,12 +125,14 @@ def test_execute_wrong_action(client, mock_adapter):
     """Action not in capability's allowed list should be rejected."""
     task_id, caps = _create_and_approve_task(client)
     cap_id = caps[0]["id"]
+    cap_token = caps[0]["token"]
 
     resp = client.post("/execute", json={
         "task_id": task_id,
         "capability_id": cap_id,
         "tool": "crm.delete_account",  # Not in allowed actions
         "arguments": {},
+        "capability_token": cap_token,
     })
     assert resp.status_code in (400, 403)
     assert "not allowed" in resp.json()["detail"]["message"].lower()
@@ -136,14 +142,34 @@ def test_execute_wrong_system(client, mock_adapter):
     """Targeting wrong system should be rejected."""
     task_id, caps = _create_and_approve_task(client)
     cap_id = caps[0]["id"]
+    cap_token = caps[0]["token"]
 
     resp = client.post("/execute", json={
         "task_id": task_id,
         "capability_id": cap_id,
         "tool": "email.send_email",  # Wrong system
         "arguments": {},
+        "capability_token": cap_token,
     })
     assert resp.status_code in (400, 403)
+
+
+def test_execute_task_id_mismatch(client, mock_adapter):
+    """Capability used with wrong task_id should be rejected."""
+    task_id, caps = _create_and_approve_task(client)
+    cap_id = caps[0]["id"]
+    cap_token = caps[0]["token"]
+
+    resp = client.post("/execute", json={
+        "task_id": "wrong_task_id",
+        "capability_id": cap_id,
+        "tool": "crm.read_account",
+        "arguments": {},
+        "capability_token": cap_token,
+    })
+    assert resp.status_code == 403
+    # Token verification catches the mismatch before DB check
+    assert "mismatch" in resp.json()["detail"]["error"]
 
 
 def test_execute_invalid_capability(client, mock_adapter):
@@ -153,14 +179,17 @@ def test_execute_invalid_capability(client, mock_adapter):
         "capability_id": "nonexistent",
         "tool": "crm.read_account",
         "arguments": {},
+        "capability_token": "fake.token.value",
     })
-    assert resp.status_code == 400
+    # Fake token will fail verification first
+    assert resp.status_code in (400, 403)
 
 
 def test_execute_revoked_capability(client, mock_adapter):
     """Revoked capability should be rejected."""
     task_id, caps = _create_and_approve_task(client)
     cap_id = caps[0]["id"]
+    cap_token = caps[0]["token"]
 
     # Revoke it
     client.post(f"/capabilities/{cap_id}/revoke", json={
@@ -174,6 +203,7 @@ def test_execute_revoked_capability(client, mock_adapter):
         "capability_id": cap_id,
         "tool": "crm.read_account",
         "arguments": {},
+        "capability_token": cap_token,
     })
     assert resp.status_code == 403
     assert "revoked" in resp.json()["detail"]["message"].lower()
@@ -196,6 +226,7 @@ def test_execute_call_limit(client, mock_adapter):
     client.post(f"/tasks/{task_id}/policy-evaluate")
     caps = client.post(f"/tasks/{task_id}/capabilities").json()
     cap_id = caps[0]["id"]
+    cap_token = caps[0]["token"]
 
     # First two calls should succeed
     for i in range(2):
@@ -204,6 +235,7 @@ def test_execute_call_limit(client, mock_adapter):
             "capability_id": cap_id,
             "tool": "crm.read_account",
             "arguments": {"call": i},
+            "capability_token": cap_token,
         })
         assert resp.status_code == 200
 
@@ -213,6 +245,7 @@ def test_execute_call_limit(client, mock_adapter):
         "capability_id": cap_id,
         "tool": "crm.read_account",
         "arguments": {"call": 3},
+        "capability_token": cap_token,
     })
     assert resp.status_code == 400
     assert "limit" in resp.json()["detail"]["message"].lower()
@@ -222,6 +255,7 @@ def test_execute_no_adapter(client):
     """System with no registered adapter should fail gracefully."""
     task_id, caps = _create_and_approve_task(client)
     cap_id = caps[0]["id"]
+    cap_token = caps[0]["token"]
 
     # No adapter registered for "crm" (mock_adapter fixture not used)
     resp = client.post("/execute", json={
@@ -229,6 +263,7 @@ def test_execute_no_adapter(client):
         "capability_id": cap_id,
         "tool": "crm.read_account",
         "arguments": {},
+        "capability_token": cap_token,
     })
     assert resp.status_code == 400
     assert "no adapter" in resp.json()["detail"]["message"].lower()
@@ -238,12 +273,14 @@ def test_execute_invalid_tool_format(client, mock_adapter):
     """Bad tool format should be rejected."""
     task_id, caps = _create_and_approve_task(client)
     cap_id = caps[0]["id"]
+    cap_token = caps[0]["token"]
 
     resp = client.post("/execute", json={
         "task_id": task_id,
         "capability_id": cap_id,
         "tool": "no_dot_separator",  # Invalid
         "arguments": {},
+        "capability_token": cap_token,
     })
     assert resp.status_code == 400
 
@@ -255,6 +292,7 @@ def test_idempotency_key(client, mock_adapter):
     """Same idempotency key should return cached result."""
     task_id, caps = _create_and_approve_task(client)
     cap_id = caps[0]["id"]
+    cap_token = caps[0]["token"]
 
     payload = {
         "task_id": task_id,
@@ -262,6 +300,7 @@ def test_idempotency_key(client, mock_adapter):
         "tool": "crm.read_account",
         "arguments": {"account_id": "789"},
         "idempotency_key": "idem_test_001",
+        "capability_token": cap_token,
     }
 
     resp1 = client.post("/execute", json=payload)
@@ -281,15 +320,111 @@ def test_execute_creates_audit_events(client, mock_adapter):
     """Tool execution should produce audit events."""
     task_id, caps = _create_and_approve_task(client)
     cap_id = caps[0]["id"]
+    cap_token = caps[0]["token"]
 
     client.post("/execute", json={
         "task_id": task_id,
         "capability_id": cap_id,
         "tool": "crm.read_account",
         "arguments": {},
+        "capability_token": cap_token,
     })
 
     resp = client.get(f"/audit?task_id={task_id}")
     events = resp.json()
     event_types = [e["event_type"] for e in events]
     assert "tool_invoked" in event_types
+
+
+# ---------- Scope enforcement ----------
+
+
+def _create_scoped_task(client, resource_scope):
+    """Create a task with a specific resource scope on the action."""
+    resp = client.post("/tasks", json={
+        "requester_id": "scope_user",
+        "runtime_id": "scope_agent",
+        "objective": "Scoped test",
+        "actions": [{
+            "system": "crm",
+            "action": "read_account",
+            "action_class": "read",
+            "resource_scope": resource_scope,
+        }],
+    })
+    task_id = resp.json()["id"]
+    client.post(f"/tasks/{task_id}/classify")
+    client.post(f"/tasks/{task_id}/policy-evaluate")
+    caps = client.post(f"/tasks/{task_id}/capabilities").json()
+    return task_id, caps
+
+
+def test_scope_dict_allows_matching_arg(client, mock_adapter):
+    """Dict scope: matching argument value should pass."""
+    task_id, caps = _create_scoped_task(
+        client, '{"account_id": ["acme_123", "acme_456"]}'
+    )
+    resp = client.post("/execute", json={
+        "task_id": task_id,
+        "capability_id": caps[0]["id"],
+        "capability_token": caps[0]["token"],
+        "tool": "crm.read_account",
+        "arguments": {"account_id": "acme_123"},
+    })
+    assert resp.status_code == 200
+
+
+def test_scope_dict_rejects_non_matching_arg(client, mock_adapter):
+    """Dict scope: non-matching argument value should be rejected."""
+    task_id, caps = _create_scoped_task(
+        client, '{"account_id": ["acme_123"]}'
+    )
+    resp = client.post("/execute", json={
+        "task_id": task_id,
+        "capability_id": caps[0]["id"],
+        "capability_token": caps[0]["token"],
+        "tool": "crm.read_account",
+        "arguments": {"account_id": "evil_corp_999"},
+    })
+    assert resp.status_code in (400, 403)
+    assert "scope_violation" in resp.json()["detail"]["error"]
+
+
+def test_scope_list_allows_matching_resource(client, mock_adapter):
+    """List scope with wildcard: matching resource should pass."""
+    task_id, caps = _create_scoped_task(client, '["acme_*"]')
+    resp = client.post("/execute", json={
+        "task_id": task_id,
+        "capability_id": caps[0]["id"],
+        "capability_token": caps[0]["token"],
+        "tool": "crm.read_account",
+        "arguments": {"account_id": "acme_123"},
+    })
+    assert resp.status_code == 200
+
+
+def test_scope_list_rejects_non_matching_resource(client, mock_adapter):
+    """List scope: non-matching resource should be rejected."""
+    task_id, caps = _create_scoped_task(client, '["acme_123"]')
+    resp = client.post("/execute", json={
+        "task_id": task_id,
+        "capability_id": caps[0]["id"],
+        "capability_token": caps[0]["token"],
+        "tool": "crm.read_account",
+        "arguments": {"account_id": "evil_corp_999"},
+    })
+    assert resp.status_code in (400, 403)
+    assert "scope_violation" in resp.json()["detail"]["error"]
+
+
+def test_no_scope_allows_anything(client, mock_adapter):
+    """No scope constraint should allow any arguments."""
+    task_id, caps = _create_and_approve_task(client)
+    resp = client.post("/execute", json={
+        "task_id": task_id,
+        "capability_id": caps[0]["id"],
+        "capability_token": caps[0]["token"],
+        "tool": "crm.read_account",
+        "arguments": {"account_id": "anything_goes"},
+    })
+    assert resp.status_code == 200
