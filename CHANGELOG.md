@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-04-15
+
+### Security
+- **Runtime identity binding on task creation** (Finding-10 #1): Non-operator callers must use their own `caller_id` as the `runtime_id` when creating tasks. This prevents a runtime from impersonating another runtime. Operators can still specify any identity.
+- **Execute enforces task ownership** (Finding-10 #1): The `/execute` endpoint now verifies the authenticated caller owns the task before dispatching to the gateway. A runtime cannot execute against another runtime's task.
+- **Legacy tasks fail closed** (Finding-10 #2): Tasks with `NULL` `created_by` (pre-v0.7.0 legacy) are denied for non-operator callers. Only operators can manage legacy tasks.
+
+### Added
+- `--api-key` CLI option for `mcp-serve` command (Finding-10 #3): Also reads from `JITAUTH_MCP_API_KEY` environment variable. The advertised CLI interface now matches the implementation.
+- Runtime identity mismatch check in `create_task()` — returns 403 with `identity_mismatch` error
+- Task existence check in `/execute` route before gateway dispatch — returns 404 for missing tasks
+- 5 new tests (runtime impersonation, execute ownership, legacy task denial, CLI option) — 190 total
+
+### Changed
+- `_enforce_task_ownership()` now denies non-operator access to tasks with `NULL` `created_by` (fail closed)
+- `/execute` performs task lookup + ownership check before calling gateway
+- Tests updated to accept 404 for bogus task_id in execute (task lookup now precedes token verification)
+
 ## [0.7.0] - 2026-04-14
 
 ### Security
@@ -174,6 +192,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shell adapter rejects dangerous characters and unexpected parameters
 - Audit hash chain detects post-hoc tampering
 
+[0.7.1]: https://github.com/digitalego/jitauth/releases/tag/v0.7.1
 [0.7.0]: https://github.com/digitalego/jitauth/releases/tag/v0.7.0
 [0.6.0]: https://github.com/digitalego/jitauth/releases/tag/v0.6.0
 [0.5.1]: https://github.com/digitalego/jitauth/releases/tag/v0.5.1

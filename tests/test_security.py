@@ -178,8 +178,8 @@ class TestOversizedPayloads:
             "arguments": nested,
             "capability_token": "fake.token.value",
         })
-        # Should reach gateway validation (not crash)
-        assert r.status_code in (400, 403)
+        # Should reach task lookup (404) or gateway validation (400/403) — not crash
+        assert r.status_code in (400, 403, 404)
 
 
 # ---------- State Machine Violations ----------

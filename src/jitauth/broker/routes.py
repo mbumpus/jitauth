@@ -53,11 +53,26 @@ def _enforce_task_ownership(task: Task, caller: AuthenticatedCaller) -> None:
     Operators bypass ownership checks.  Runtime-role callers must have
     created the task (``task.created_by == caller.caller_id``).
 
+    Legacy tasks with ``created_by = NULL`` (pre-v0.7.0) are denied for
+    non-operator callers — fail closed rather than fail open.
+
     This prevents one runtime from manipulating another runtime's tasks.
     """
     if caller.is_operator:
         return
-    if task.created_by and task.created_by != caller.caller_id:
+    # Fail closed: if created_by is missing (legacy task), deny non-operators
+    if not task.created_by:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "task_ownership_denied",
+                "message": (
+                    f"Task '{task.id}' has no ownership record (legacy task). "
+                    f"Only operators can access legacy tasks."
+                ),
+            },
+        )
+    if task.created_by != caller.caller_id:
         raise HTTPException(
             status_code=403,
             detail={
@@ -85,6 +100,23 @@ def health():
 @router.post("/tasks", response_model=TaskResponse, status_code=201)
 def create_task(req: TaskCreate, db: Session = Depends(get_db), caller: AuthenticatedCaller = Depends(get_caller)):
     now = datetime.now(timezone.utc)
+
+    # Bind identity: non-operator callers (runtimes) must use their own
+    # caller_id as the runtime_id.  Operators can specify any identity.
+    # This prevents a runtime from impersonating another runtime.
+    if not caller.is_operator:
+        if req.runtime_id != caller.caller_id:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "identity_mismatch",
+                    "message": (
+                        f"Runtime caller '{caller.caller_id}' cannot create tasks "
+                        f"with runtime_id '{req.runtime_id}'. "
+                        f"Non-operator callers must use their own identity as runtime_id."
+                    ),
+                },
+            )
 
     # Hash the runtime session secret if provided (Finding-2 #1, scrypt KDF)
     secret_hash = None
@@ -440,6 +472,13 @@ def request_capabilities(task_id: str, db: Session = Depends(get_db), caller: Au
 
 @router.post("/execute", response_model=ExecuteResponse)
 async def execute_tool(req: ExecuteRequest, db: Session = Depends(get_db), caller: AuthenticatedCaller = Depends(get_caller)):
+    # Enforce task ownership before touching the gateway.
+    # This prevents a runtime from executing against another runtime's task.
+    task = db.get(Task, req.task_id)
+    if not task:
+        raise HTTPException(404, detail={"error": "task_not_found", "message": "Task not found"})
+    _enforce_task_ownership(task, caller)
+
     from jitauth.proxy.gateway import execute_tool_call
 
     try:

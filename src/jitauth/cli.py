@@ -45,6 +45,8 @@ def init_db():
 @click.option("--requester-id", default="mcp_agent", help="Default requester ID")
 @click.option("--runtime-id", default="mcp_runtime", help="Runtime ID")
 @click.option("--trust-tier", default="low", help="Trust tier for this runtime")
+@click.option("--api-key", default=None, envvar="JITAUTH_MCP_API_KEY",
+              help="API key for broker authentication (or set JITAUTH_MCP_API_KEY)")
 def mcp_serve(
     adapters: str,
     transport: str,
@@ -52,6 +54,7 @@ def mcp_serve(
     requester_id: str,
     runtime_id: str,
     trust_tier: str,
+    api_key: str | None,
 ):
     """Start JITAuth as an MCP server.
 
@@ -70,6 +73,8 @@ def mcp_serve(
     click.echo(f"Starting JITAuth MCP server ({transport} transport)")
     click.echo(f"  Adapters config: {adapters}")
     click.echo(f"  Runtime: {runtime_id} (trust: {trust_tier})")
+    if api_key:
+        click.echo("  API key: configured")
 
     server = create_mcp_server(
         name=name,
@@ -77,6 +82,7 @@ def mcp_serve(
         requester_id=requester_id,
         runtime_id=runtime_id,
         runtime_trust_tier=trust_tier,
+        api_key=api_key,
     )
 
     if transport == "stdio":

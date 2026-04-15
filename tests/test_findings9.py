@@ -123,9 +123,9 @@ class TestTaskOwnership:
         from jitauth.broker.server import create_app
         app = create_app(rate_limit=False)
         with TestClient(app) as c:
-            # Agent A creates a task
+            # Agent A creates a task (runtime_id must match caller identity)
             resp = c.post("/tasks", json={
-                "requester_id": "u1", "runtime_id": "rt-a", "objective": "a's task",
+                "requester_id": "u1", "runtime_id": "agent-a", "objective": "a's task",
                 "actions": [{"system": "crm", "action": "read_account", "action_class": "read"}],
             }, headers={"Authorization": "Bearer sk-runtime-a"})
             assert resp.status_code == 201
@@ -136,6 +136,26 @@ class TestTaskOwnership:
                          headers={"Authorization": "Bearer sk-runtime-b"})
             assert resp.status_code == 403
             assert "task_ownership_denied" in resp.json()["detail"]["error"]
+
+    def test_non_operator_cannot_impersonate_runtime(self, tmp_path):
+        """Runtime caller can't create task with a different runtime_id."""
+        s = get_settings()
+        override_settings(Settings(
+            database_url=s.database_url,
+            policy_dir=s.policy_dir,
+            jwt_secret=s.jwt_secret,
+            require_api_auth=True,
+            api_keys={"sk-runtime-a": "runtime:agent-a"},
+        ))
+        from jitauth.broker.server import create_app
+        app = create_app(rate_limit=False)
+        with TestClient(app) as c:
+            resp = c.post("/tasks", json={
+                "requester_id": "u1", "runtime_id": "someone-else", "objective": "impersonate",
+                "actions": [{"system": "crm", "action": "read_account", "action_class": "read"}],
+            }, headers={"Authorization": "Bearer sk-runtime-a"})
+            assert resp.status_code == 403
+            assert "identity_mismatch" in resp.json()["detail"]["error"]
 
     def test_non_operator_can_access_own_task(self, tmp_path):
         """Runtime caller CAN access tasks they created."""
@@ -151,7 +171,7 @@ class TestTaskOwnership:
         app = create_app(rate_limit=False)
         with TestClient(app) as c:
             resp = c.post("/tasks", json={
-                "requester_id": "u1", "runtime_id": "rt-a", "objective": "own task",
+                "requester_id": "u1", "runtime_id": "agent-a", "objective": "own task",
                 "actions": [{"system": "crm", "action": "read_account", "action_class": "read"}],
             }, headers={"Authorization": "Bearer sk-runtime-a"})
             assert resp.status_code == 201
@@ -178,7 +198,7 @@ class TestTaskOwnership:
         app = create_app(rate_limit=False)
         with TestClient(app) as c:
             resp = c.post("/tasks", json={
-                "requester_id": "u1", "runtime_id": "rt-a", "objective": "test",
+                "requester_id": "u1", "runtime_id": "agent-a", "objective": "test",
                 "actions": [{"system": "crm", "action": "read_account", "action_class": "read"}],
             }, headers={"Authorization": "Bearer sk-runtime-a"})
             task_id = resp.json()["id"]
@@ -187,6 +207,84 @@ class TestTaskOwnership:
             resp = c.post(f"/tasks/{task_id}/classify",
                           headers={"Authorization": "Bearer sk-runtime-b"})
             assert resp.status_code == 403
+
+
+    def test_execute_enforces_ownership(self, tmp_path, mock_adapter):
+        """Runtime caller can't execute against another runtime's task."""
+        s = get_settings()
+        override_settings(Settings(
+            database_url=s.database_url,
+            policy_dir=s.policy_dir,
+            jwt_secret=s.jwt_secret,
+            require_api_auth=True,
+            api_keys={
+                "sk-runtime-a": "runtime:agent-a",
+                "sk-runtime-b": "runtime:agent-b",
+                "sk-ops": "operator:admin",
+            },
+        ))
+        from jitauth.broker.server import create_app
+        app = create_app(rate_limit=False)
+        with TestClient(app) as c:
+            # Operator creates and progresses a task
+            resp = c.post("/tasks", json={
+                "requester_id": "u1", "runtime_id": "agent-a", "objective": "exec test",
+                "actions": [{"system": "crm", "action": "read_account", "action_class": "read"}],
+            }, headers={"Authorization": "Bearer sk-ops"})
+            task_id = resp.json()["id"]
+            c.post(f"/tasks/{task_id}/classify",
+                   headers={"Authorization": "Bearer sk-ops"})
+            c.post(f"/tasks/{task_id}/policy-evaluate",
+                   headers={"Authorization": "Bearer sk-ops"})
+            caps = c.post(f"/tasks/{task_id}/capabilities",
+                          headers={"Authorization": "Bearer sk-ops"}).json()
+            cap = caps[0]
+
+            # Agent B tries to execute against admin's task
+            resp = c.post("/execute", json={
+                "task_id": task_id,
+                "capability_id": cap["id"],
+                "capability_token": cap["token"],
+                "tool": "crm.read_account",
+                "arguments": {"account_id": "a1"},
+            }, headers={"Authorization": "Bearer sk-runtime-b"})
+            assert resp.status_code == 403
+            assert "task_ownership_denied" in resp.json()["detail"]["error"]
+
+    def test_legacy_null_created_by_denied_for_runtime(self, client):
+        """Tasks with NULL created_by are denied for non-operator callers."""
+        # Create a task normally (will have created_by set)
+        resp = client.post("/tasks", json={
+            "requester_id": "u1", "runtime_id": "rt1", "objective": "test legacy",
+            "actions": [{"system": "crm", "action": "read_account", "action_class": "read"}],
+        })
+        task_id = resp.json()["id"]
+
+        # Simulate a legacy task by clearing created_by
+        from jitauth.db.session import get_session_factory
+        from jitauth.core.models import Task
+        db = get_session_factory()()
+        task = db.get(Task, task_id)
+        task.created_by = None
+        db.commit()
+        db.close()
+
+        # Now set up auth and try as a runtime caller
+        s = get_settings()
+        override_settings(Settings(
+            database_url=s.database_url,
+            policy_dir=s.policy_dir,
+            jwt_secret=s.jwt_secret,
+            require_api_auth=True,
+            api_keys={"sk-rt": "runtime:agent-x"},
+        ))
+        from jitauth.broker.server import create_app
+        app = create_app(rate_limit=False)
+        with TestClient(app) as c:
+            resp = c.get(f"/tasks/{task_id}",
+                         headers={"Authorization": "Bearer sk-rt"})
+            assert resp.status_code == 403
+            assert "legacy" in resp.json()["detail"]["message"].lower()
 
 
 # ====================================================================
@@ -302,7 +400,32 @@ class TestMCPAPIKey:
 
 
 # ====================================================================
-# 5. Audit trail records caller identity on task creation
+# 5. CLI --api-key option
+# ====================================================================
+
+
+class TestCLIAPIKey:
+    """MCP serve CLI has --api-key option."""
+
+    def test_mcp_serve_has_api_key_option(self):
+        """mcp-serve command accepts --api-key."""
+        from click.testing import CliRunner
+        from jitauth.cli import main
+        runner = CliRunner()
+        result = runner.invoke(main, ["mcp-serve", "--help"])
+        assert "--api-key" in result.output
+
+    def test_mcp_serve_has_envvar(self):
+        """--api-key reads from JITAUTH_MCP_API_KEY env var."""
+        from click.testing import CliRunner
+        from jitauth.cli import main
+        runner = CliRunner()
+        result = runner.invoke(main, ["mcp-serve", "--help"])
+        assert "JITAUTH_MCP_API_KEY" in result.output
+
+
+# ====================================================================
+# 6. Audit trail records caller identity on task creation
 # ====================================================================
 
 
