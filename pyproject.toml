@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jitauth"
-version = "0.7.2"
+version = "0.8.0"
 description = "Just-in-time, task-scoped authentication and authorization for AI agents"
 readme = "README.md"
 license = "MIT"
@@ -78,3 +78,6 @@ ignore = ["B008"]  # Allow Depends() in argument defaults (FastAPI convention)
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "postgres: tests that require a live Postgres instance (set JITAUTH_TEST_DATABASE_URL)",
+]

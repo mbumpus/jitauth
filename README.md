@@ -244,7 +244,7 @@ JITAuth is designed with defense in depth:
 
 ## Status
 
-v0.7.2 — production-hardened governance pipeline with 190+ tests. Eleven rounds of adversarial code review (D → A). Control-plane authentication, runtime identity binding, task ownership, atomic budgets, streaming body size enforcement, and secure-by-default SDK. Ready for integration testing with real agent frameworks.
+v0.8.0 — production-hardened governance pipeline with 190+ tests (SQLite) plus a Postgres integration/concurrency test suite. Twelve rounds of adversarial code review (D → A). Control-plane authentication, runtime identity binding, task ownership, atomic budgets, streaming body size enforcement, and secure-by-default SDK. Ready for integration testing with real agent frameworks.
 
 ## License
 

@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-04-15
+
+### Added
+- **Postgres integration & concurrency test suite** (`tests/test_postgres.py`): 9 tests covering concurrent budget enforcement, audit chain integrity under concurrency, Alembic migration validation, and row-locking verification — all against a real Postgres instance. Skipped automatically when `JITAUTH_TEST_DATABASE_URL` is unset.
+- `docker-compose.test.yaml`: RAM-backed Postgres 16 for fast test runs (port 5433)
+- `Makefile` with `test`, `test-postgres`, `test-all`, and `lint` targets
+- `postgres` pytest marker registered in `pyproject.toml`
+- `psycopg2-binary` in `[project.optional-dependencies.postgres]` for Postgres driver support
+
+### Test coverage
+- **Concurrent budget enforcement**: fires N concurrent `/execute` calls against budget M < N; verifies at most M succeed (validates `SELECT … FOR UPDATE` serialization)
+- **Concurrent audit chain**: creates tasks concurrently; verifies `chain_seq` uniqueness and hash chain integrity
+- **Alembic on Postgres**: `upgrade head` on empty DB, idempotent re-run on migrated DB
+- **Row locking**: verifies `FOR UPDATE` doesn't deadlock under concurrent access
+
 ## [0.7.2] - 2026-04-15
 
 ### Changed
@@ -200,6 +215,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shell adapter rejects dangerous characters and unexpected parameters
 - Audit hash chain detects post-hoc tampering
 
+[0.8.0]: https://github.com/digitalego/jitauth/releases/tag/v0.8.0
 [0.7.2]: https://github.com/digitalego/jitauth/releases/tag/v0.7.2
 [0.7.1]: https://github.com/digitalego/jitauth/releases/tag/v0.7.1
 [0.7.0]: https://github.com/digitalego/jitauth/releases/tag/v0.7.0
