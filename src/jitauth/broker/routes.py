@@ -44,6 +44,29 @@ from jitauth.proxy.gateway import GatewayError
 router = APIRouter()
 
 
+# ---------- Ownership ----------
+
+
+def _enforce_task_ownership(task: Task, caller: AuthenticatedCaller) -> None:
+    """Ensure non-operator callers can only access tasks they created.
+
+    Operators bypass ownership checks.  Runtime-role callers must have
+    created the task (``task.created_by == caller.caller_id``).
+
+    This prevents one runtime from manipulating another runtime's tasks.
+    """
+    if caller.is_operator:
+        return
+    if task.created_by and task.created_by != caller.caller_id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "task_ownership_denied",
+                "message": f"Caller '{caller.caller_id}' is not the creator of task '{task.id}'",
+            },
+        )
+
+
 # ---------- Health ----------
 
 
@@ -78,6 +101,7 @@ def create_task(req: TaskCreate, db: Session = Depends(get_db), caller: Authenti
         runtime_type=req.runtime_type,
         runtime_trust_tier=req.runtime_trust_tier,
         runtime_secret_hash=secret_hash,
+        created_by=caller.caller_id,
         objective=req.objective,
         status=TaskStatus.created,
         max_actions=req.max_actions,
@@ -100,7 +124,11 @@ def create_task(req: TaskCreate, db: Session = Depends(get_db), caller: Authenti
         )
 
     db.add(task)
-    _audit(db, task.id, "task_created", req.requester_id, {"objective": req.objective})
+    _audit(db, task.id, "task_created", caller.caller_id, {
+        "objective": req.objective,
+        "requester_id": req.requester_id,
+        "runtime_id": req.runtime_id,
+    })
     db.commit()
     db.refresh(task)
     return task
@@ -111,6 +139,7 @@ def get_task(task_id: str, db: Session = Depends(get_db), caller: AuthenticatedC
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(404, "Task not found")
+    _enforce_task_ownership(task, caller)
     return task
 
 
@@ -122,6 +151,7 @@ def classify_task(task_id: str, db: Session = Depends(get_db), caller: Authentic
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(404, "Task not found")
+    _enforce_task_ownership(task, caller)
     if task.status != TaskStatus.created:
         raise HTTPException(409, f"Task is in state '{task.status}', expected 'created'")
 
@@ -151,6 +181,7 @@ def evaluate_policy(task_id: str, db: Session = Depends(get_db), caller: Authent
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(404, "Task not found")
+    _enforce_task_ownership(task, caller)
     if task.status != TaskStatus.pending_policy:
         raise HTTPException(409, f"Task is in state '{task.status}', expected 'pending_policy'")
 
@@ -269,6 +300,7 @@ def request_capabilities(task_id: str, db: Session = Depends(get_db), caller: Au
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(404, "Task not found")
+    _enforce_task_ownership(task, caller)
     if task.status != TaskStatus.approved:
         raise HTTPException(409, f"Task is in state '{task.status}', expected 'approved'")
 

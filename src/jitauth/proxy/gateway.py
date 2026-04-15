@@ -160,7 +160,8 @@ async def execute_tool_call(
         )
 
     # 1. Validate capability in DB (for revocation and call counting)
-    cap = db.get(Capability, capability_id)
+    #    Lock with FOR UPDATE for atomic calls_used increment.
+    cap = db.query(Capability).filter(Capability.id == capability_id).with_for_update().first()
     if cap is None:
         raise GatewayError("Capability not found", "capability_not_found")
 
@@ -177,7 +178,15 @@ async def execute_tool_call(
     # If the task was created with a runtime_secret, the caller must prove
     # possession of the same secret.  This binds execution to the originally
     # authenticated runtime, not just to possession of the capability token.
-    task_obj = db.get(Task, task_id)
+    #
+    # Lock the Task row with FOR UPDATE so the budget check (step 7b) is
+    # atomic under concurrent requests.  On SQLite this is a no-op.
+    task_obj = (
+        db.query(Task)
+        .filter(Task.id == task_id)
+        .with_for_update()
+        .first()
+    )
     if task_obj and task_obj.runtime_secret_hash:
         if not runtime_secret:
             raise GatewayError(

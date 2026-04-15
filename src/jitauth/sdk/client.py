@@ -181,19 +181,25 @@ class JITAuthClient:
         runtime_type: str = "llm_orchestrator",
         runtime_trust_tier: str = "low",
         timeout: float = 30.0,
+        api_key: str | None = None,
     ):
         self.broker_url = broker_url.rstrip("/")
         self.runtime_id = runtime_id
         self.runtime_type = runtime_type
         self.runtime_trust_tier = runtime_trust_tier
         self.timeout = timeout
+        self.api_key = api_key
         self._http: httpx.AsyncClient | None = None
 
     async def _get_http(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:
+            headers = {}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
             self._http = httpx.AsyncClient(
                 base_url=self.broker_url,
                 timeout=self.timeout,
+                headers=headers,
             )
         return self._http
 

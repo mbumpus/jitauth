@@ -36,6 +36,7 @@ def upgrade() -> None:
         sa.Column("runtime_type", sa.String(100), nullable=False),
         sa.Column("runtime_trust_tier", sa.String(20), nullable=False, server_default="low"),
         sa.Column("runtime_secret_hash", sa.String(130), nullable=True),
+        sa.Column("created_by", sa.String(255), nullable=True),
         sa.Column("objective", sa.Text, nullable=False),
         sa.Column("risk_tier", sa.String(20), nullable=True),
         sa.Column("status", sa.String(20), nullable=False, server_default="created"),

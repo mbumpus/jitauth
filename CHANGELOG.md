@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-04-14
+
+### Security
+- **Task ownership enforcement** (Finding-9 #1): Tasks now record `created_by` (the authenticated caller identity). Non-operator (runtime) callers can only access, classify, evaluate, and mint capabilities for tasks they created. Operators bypass ownership checks. This prevents cross-runtime task manipulation.
+- **Atomic budget enforcement** (Finding-9 #3): Both the per-capability `calls_used` increment and per-task action budget check now use `SELECT … FOR UPDATE` row locking. Concurrent execution requests are serialized at the database level, preventing budget overshoot.
+
+### Added
+- `created_by` column on `Task` model — records authenticated caller identity at creation time
+- `_enforce_task_ownership()` helper in routes — checks caller against `task.created_by`
+- `api_key` parameter on `JITAuthClient` (Finding-9 #2): SDK sends `Authorization: Bearer <api_key>` on all HTTP requests when configured. Works with both the default `require_api_auth=True` config and disabled auth.
+- `api_key` parameter on `create_mcp_server()`: MCP server passes the key to the SDK client for authenticated broker communication.
+- Migration `002_v070_task_ownership`: adds `created_by` column for existing deployments
+- 14 new tests covering all findings-9 items (185 total, was 171)
+
+### Changed
+- Task creation audit events now use `caller.caller_id` as actor (not `requester_id` from JSON) and include `requester_id` + `runtime_id` in the event details
+- `GET /tasks/{id}`, `POST /tasks/{id}/classify`, `POST /tasks/{id}/policy-evaluate`, and `POST /tasks/{id}/capabilities` all enforce task ownership for non-operator callers
+- Gateway `execute_tool_call` locks both the Capability and Task rows with `FOR UPDATE` before budget checks
+- README updated with authenticated SDK examples, API key configuration, and current security features
+
 ## [0.6.0] - 2026-04-14
 
 ### Security
@@ -154,6 +174,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shell adapter rejects dangerous characters and unexpected parameters
 - Audit hash chain detects post-hoc tampering
 
+[0.7.0]: https://github.com/digitalego/jitauth/releases/tag/v0.7.0
 [0.6.0]: https://github.com/digitalego/jitauth/releases/tag/v0.6.0
 [0.5.1]: https://github.com/digitalego/jitauth/releases/tag/v0.5.1
 [0.5.0]: https://github.com/digitalego/jitauth/releases/tag/v0.5.0

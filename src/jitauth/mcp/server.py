@@ -40,6 +40,7 @@ def create_mcp_server(
     runtime_id: str = "mcp_runtime",
     runtime_type: str = "llm_orchestrator",
     runtime_trust_tier: str = "low",
+    api_key: str | None = None,
 ) -> FastMCP:
     """Create an MCP server with JITAuth-governed tools.
 
@@ -65,6 +66,7 @@ def create_mcp_server(
         "runtime_id": runtime_id,
         "runtime_type": runtime_type,
         "runtime_trust_tier": runtime_trust_tier,
+        "api_key": api_key,
     }
 
     # Load adapter configs if provided
@@ -231,6 +233,7 @@ async def _execute_governed(
         runtime_id=server_ctx["runtime_id"],
         runtime_type=server_ctx["runtime_type"],
         runtime_trust_tier=server_ctx["runtime_trust_tier"],
+        api_key=server_ctx.get("api_key"),
     )
 
     try:

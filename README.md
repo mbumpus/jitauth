@@ -24,12 +24,29 @@ jitauth serve
 
 The broker starts on `http://localhost:8700`. Define your tools in `adapters.yaml` and your rules in `policies/default.yaml`.
 
+## Authentication
+
+The broker requires API key authentication by default. Configure keys in your environment or `.env`:
+
+```bash
+JITAUTH_API_KEYS='{"sk-ops-key": "operator:admin", "sk-agent-key": "runtime:agent-1"}'
+JITAUTH_JWT_SECRET="your-secret-at-least-32-chars-long"
+```
+
+Operator keys can approve tasks, query audit, and manage any task. Runtime keys can only manage tasks they created. The `/health` endpoint is always public.
+
+For local development and testing, set `JITAUTH_REQUIRE_API_AUTH=false` to disable auth.
+
 ## Python SDK
 
 ```python
 from jitauth.sdk import JITAuthClient
 
-client = JITAuthClient("http://localhost:8700")
+client = JITAuthClient(
+    "http://localhost:8700",
+    api_key="sk-agent-key",           # Required when auth is enabled
+    runtime_id="my-agent",
+)
 
 async with client.task(
     requester="user_123",
@@ -41,7 +58,7 @@ async with client.task(
 ) as task:
     account = await task.execute("crm.read_account", {"account_id": "456"})
     await task.execute("email.create_draft", {"body": "...", "to": "client@co.com"})
-    # Capabilities auto-expire on exit
+    # Capabilities auto-expire on exit; runtime_secret auto-generated
 ```
 
 If policy denies the task, you get a `TaskDeniedError`. If approval is required, you get an `ApprovalRequiredError` with the `task_id` for out-of-band approval.
@@ -52,7 +69,8 @@ JITAuth runs as an MCP server, so any MCP-compatible agent gets governed tool ac
 
 ```bash
 pip install jitauth[mcp]
-jitauth mcp-serve --adapters adapters.yaml
+JITAUTH_API_KEYS='{"sk-mcp-key": "runtime:mcp-agent"}' \
+jitauth mcp-serve --adapters adapters.yaml --api-key sk-mcp-key
 ```
 
 Every tool call from the agent goes through the full governance pipeline. The agent sees tools, calls them normally, and JITAuth handles policy, scoping, credentials, and audit transparently.
@@ -141,7 +159,8 @@ Actions are classified into risk tiers that drive policy:
 Every action produces an audit event. Events are hash-chained for tamper detection.
 
 ```bash
-curl http://localhost:8700/audit?task_id=01HXYZ...
+curl -H "Authorization: Bearer sk-ops-key" \
+  http://localhost:8700/audit?task_id=01HXYZ...
 ```
 
 The audit trail answers: who requested the task, which runtime acted, what policy allowed it, what capability was issued, what tools were called, and what happened.
@@ -204,17 +223,23 @@ jitauth openapi -o openapi.json
 
 JITAuth is designed with defense in depth:
 
+- **API key authentication** — all broker endpoints require Bearer token auth (configurable)
+- **Task ownership enforcement** — runtime callers can only access tasks they created
 - **Deny-by-default policy** — no action proceeds without an explicit allow rule
 - **Credential isolation** — agent runtimes never see downstream credentials
+- **Runtime binding** — SDK auto-generates a session secret; execution is bound to the creating runtime
+- **JWT startup validation** — rejects weak signing secrets at boot
+- **Atomic budget enforcement** — per-task action budgets use row locking under concurrency
 - **Rate limiting** — configurable per-IP sliding window (120 req/min default)
-- **Request size limiting** — 1MB max body (configurable)
+- **Request size limiting** — 1MB max body, streaming enforcement (configurable)
 - **Input validation** — Pydantic field constraints on all API schemas
-- **Audit hash chain** — SHA-256 linked events for tamper detection
+- **Audit hash chain** — SHA-256 linked events with DB-serialized writes for tamper detection
 - **Shell sandboxing** — allowlisted commands only, dangerous character rejection
+- **scrypt KDF** — runtime secrets hashed with scrypt, constant-time comparison
 
 ## Status
 
-v0.1.0 — the core governance pipeline is complete with 102 tests passing. Security hardened with input fuzzing, SQL injection tests, state machine violation tests, and rate limiting. Ready for integration testing with real agent frameworks.
+v0.7.0 — production-hardened governance pipeline with 185+ tests. Eight rounds of adversarial code review (D → A). Control-plane authentication, task ownership, atomic budgets, streaming body size enforcement, and secure-by-default SDK. Ready for integration testing with real agent frameworks.
 
 ## License
 

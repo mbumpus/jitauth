@@ -87,6 +87,7 @@ class Task(Base):
     runtime_type: Mapped[str] = mapped_column(String(100))
     runtime_trust_tier: Mapped[str] = mapped_column(String(20), default="low")
     runtime_secret_hash: Mapped[str | None] = mapped_column(String(130))  # scrypt salt$hash
+    created_by: Mapped[str | None] = mapped_column(String(255))  # authenticated caller identity
     objective: Mapped[str] = mapped_column(Text)
     risk_tier: Mapped[RiskTier | None] = mapped_column(Enum(RiskTier))
     status: Mapped[TaskStatus] = mapped_column(

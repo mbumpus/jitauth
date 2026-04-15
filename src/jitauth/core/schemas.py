@@ -62,6 +62,7 @@ class TaskResponse(BaseModel):
     requester_id: str
     runtime_id: str
     runtime_type: str
+    created_by: str | None = None
     objective: str
     risk_tier: RiskTier | None
     status: TaskStatus
