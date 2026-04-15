@@ -152,7 +152,7 @@ class ExecuteResponse(BaseModel):
 
 
 class ApprovalRequest(BaseModel):
-    approver_id: str = Field(min_length=1, max_length=255)
+    approver_id: str | None = Field(default=None, max_length=255)  # Deprecated: derived from auth
     approved: bool
     reduced_scope: dict | None = None
     reason: str | None = Field(default=None, max_length=1000)
@@ -187,7 +187,7 @@ class CompleteTaskResponse(BaseModel):
 
 class RevokeRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)
-    revoked_by: str = Field(min_length=1, max_length=255)
+    revoked_by: str | None = Field(default=None, max_length=255)  # Deprecated: derived from auth
 
 
 class RevokeResponse(BaseModel):

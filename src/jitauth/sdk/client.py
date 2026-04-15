@@ -273,6 +273,12 @@ class JITAuthClient:
                 "time_limit_seconds": time_limit_seconds,
                 "allow_destructive": allow_destructive,
             }
+            # Auto-generate a runtime_secret if the caller didn't provide one
+            # (default behavior).  Pass runtime_secret="" to explicitly disable.
+            # This ensures runtime-bound execution is the default secure path.
+            if runtime_secret is None:
+                import secrets
+                runtime_secret = secrets.token_hex(32)
             if runtime_secret:
                 create_payload["runtime_secret"] = runtime_secret
             resp = await self._post("/tasks", create_payload)

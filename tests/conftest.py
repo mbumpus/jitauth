@@ -56,6 +56,7 @@ rules:
         policy_dir=str(policy_dir),
         jwt_secret="test-secret-that-is-at-least-32-bytes-long-for-hs256",
         debug=False,
+        require_api_auth=False,
     )
     override_settings(settings)
     reset_engine()

@@ -229,6 +229,7 @@ rules:
             database_url=s.database_url,
             policy_dir=str(policy_dir),
             jwt_secret=s.jwt_secret,
+            require_api_auth=s.require_api_auth,
         ))
         reload_rules()
 
@@ -281,6 +282,7 @@ rules:
             database_url=s.database_url,
             policy_dir=str(policy_dir),
             jwt_secret=s.jwt_secret,
+            require_api_auth=s.require_api_auth,
         ))
         reload_rules()
 

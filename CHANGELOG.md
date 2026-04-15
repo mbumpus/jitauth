@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-04-14
+
+### Security
+- **Control-plane API authentication** (Finding-8 #1): All broker endpoints now require Bearer-token authentication when `require_api_auth=True` (default). API keys map to `role:name` identities. Approval and revocation derive the operator identity from the authenticated caller, not from request JSON — prevents identity spoofing. `/health` remains public.
+- **JWT startup secret validation** (Finding-8 #2): Broker startup now rejects known-weak JWT secrets (e.g. `CHANGE-ME-IN-PRODUCTION`, `changeme`, `secret`) and secrets shorter than 32 characters, failing fast with a clear error message.
+- **SDK auto-generates runtime_secret by default** (Finding-8 #6): `JITAuthClient.task()` now auto-generates a 64-hex-char `runtime_secret` when the caller doesn't supply one. Pass `runtime_secret=""` to explicitly opt out. Runtime-bound execution is now the secure-by-default path.
+
+### Added
+- `jitauth.broker.auth` module: `AuthenticatedCaller` dataclass, `get_caller` and `require_operator` FastAPI dependencies
+- `require_api_auth` and `api_keys` settings in `Settings`
+- `_validate_startup_config()` in `server.py` with known-weak-secret detection
+- Task-level total action budget enforcement in gateway (Finding-8 #3): `max_actions` is now enforced across all capabilities for a task, not just per-capability. Third call beyond budget returns 400/403.
+- Streaming request body size enforcement in middleware (Finding-8 #4): `RequestSizeLimiter` now reads the body stream with a byte cap for POST/PUT/PATCH, catching chunked or missing `Content-Length` requests.
+- `require_simulation` and `quarantine` policy effects now explicitly deny with audit (Finding-8 #5): Instead of silently proceeding, these unimplemented effects set the task to `denied` and log a `policy_effect_unsupported` audit event.
+- 14 new tests covering all 6 findings-8 items (171 total, was 157)
+
+### Changed
+- `ApprovalRequest.approver_id` and `RevokeRequest.revoked_by` are now optional in schemas (identity derived from auth)
+- All task lifecycle routes (`approve`, `revoke`, `complete`, `fail`) use authenticated caller identity
+
 ## [0.5.1] - 2026-04-14
 
 ### Fixed
@@ -134,6 +154,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shell adapter rejects dangerous characters and unexpected parameters
 - Audit hash chain detects post-hoc tampering
 
+[0.6.0]: https://github.com/digitalego/jitauth/releases/tag/v0.6.0
 [0.5.1]: https://github.com/digitalego/jitauth/releases/tag/v0.5.1
 [0.5.0]: https://github.com/digitalego/jitauth/releases/tag/v0.5.0
 [0.4.0]: https://github.com/digitalego/jitauth/releases/tag/v0.4.0

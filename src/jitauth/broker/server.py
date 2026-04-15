@@ -33,9 +33,49 @@ def _load_adapters_from_config() -> None:
     logger.info("Loaded %d adapter config(s) from %s", len(configs), settings.adapters_config)
 
 
+_KNOWN_WEAK_SECRETS = frozenset({
+    "CHANGE-ME-IN-PRODUCTION",
+    "changeme",
+    "secret",
+    "test",
+    "",
+})
+
+_MIN_JWT_SECRET_LENGTH = 32
+
+
+def _validate_startup_config() -> None:
+    """Fail fast if critical security settings are misconfigured."""
+    import logging
+    from jitauth.config.settings import get_settings
+
+    settings = get_settings()
+    logger = logging.getLogger(__name__)
+
+    # JWT signing secret must not be a known default or too short
+    if settings.jwt_secret in _KNOWN_WEAK_SECRETS:
+        raise RuntimeError(
+            f"FATAL: jwt_secret is a known default ({settings.jwt_secret!r}). "
+            f"Set JITAUTH_JWT_SECRET to a strong random value (>={_MIN_JWT_SECRET_LENGTH} chars)."
+        )
+    if len(settings.jwt_secret) < _MIN_JWT_SECRET_LENGTH:
+        raise RuntimeError(
+            f"FATAL: jwt_secret is only {len(settings.jwt_secret)} chars. "
+            f"Minimum required: {_MIN_JWT_SECRET_LENGTH} chars for HS256."
+        )
+
+    # Warn if API auth is disabled in non-test mode
+    if not settings.require_api_auth and not settings.debug:
+        logger.warning(
+            "API authentication is DISABLED (require_api_auth=False). "
+            "This is only appropriate for local development."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize DB, restore audit chain, and load configs on startup."""
+    _validate_startup_config()
     init_db()
 
     # Restore audit hash chain from the last DB event so continuity

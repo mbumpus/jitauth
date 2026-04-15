@@ -28,6 +28,7 @@ from jitauth.core.json_fields import parse_json
 from jitauth.core.models import (
     Capability,
     CapabilityStatus,
+    Task,
     ToolInvocation,
 )
 from jitauth.proxy.base import AdapterConfig, BaseAdapter
@@ -176,7 +177,6 @@ async def execute_tool_call(
     # If the task was created with a runtime_secret, the caller must prove
     # possession of the same secret.  This binds execution to the originally
     # authenticated runtime, not just to possession of the capability token.
-    from jitauth.core.models import Task
     task_obj = db.get(Task, task_id)
     if task_obj and task_obj.runtime_secret_hash:
         if not runtime_secret:
@@ -259,6 +259,21 @@ async def execute_tool_call(
             f"Call limit exceeded ({cap.max_calls} max)",
             "call_limit_exceeded",
         )
+
+    # 7b. Check task-level total action budget across all capabilities.
+    # A task with max_actions=N should allow at most N total invocations
+    # across all its capabilities, not N per capability.
+    if task_obj:
+        total_invocations = (
+            db.query(ToolInvocation)
+            .filter(ToolInvocation.task_id == task_id)
+            .count()
+        )
+        if total_invocations >= task_obj.max_actions:
+            raise GatewayError(
+                f"Task action budget exhausted ({task_obj.max_actions} max across all capabilities)",
+                "task_budget_exceeded",
+            )
 
     # 8. Execute via adapter (credentials injected server-side)
     credential = _get_credential_for_system(system)

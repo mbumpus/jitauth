@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     default_capability_ttl_seconds: int = 300  # 5 minutes
     max_capability_ttl_seconds: int = 900  # 15 minutes
 
+    # Control-plane API authentication
+    # Map of API key → "operator:<name>" or "runtime:<name>"
+    # e.g. {"sk-abc123": "operator:admin", "rt-xyz789": "runtime:agent-1"}
+    api_keys: dict[str, str] = {}
+    require_api_auth: bool = True  # Set False for tests / local dev without auth
+
     # Policy
     policy_dir: str = "policies"
 

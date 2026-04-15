@@ -77,6 +77,7 @@ class RequestSizeLimiter(BaseHTTPMiddleware):
         self.max_body_bytes = max_body_bytes
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # Fast reject if Content-Length header exceeds limit
         content_length = request.headers.get("content-length")
         if content_length and int(content_length) > self.max_body_bytes:
             return JSONResponse(
@@ -85,4 +86,21 @@ class RequestSizeLimiter(BaseHTTPMiddleware):
                     "detail": f"Request body too large. Maximum: {self.max_body_bytes} bytes."
                 },
             )
+
+        # Also enforce while reading the body stream (catches chunked/missing
+        # Content-Length).  We consume the body into memory with a byte cap.
+        if request.method in ("POST", "PUT", "PATCH"):
+            body = b""
+            async for chunk in request.stream():
+                body += chunk
+                if len(body) > self.max_body_bytes:
+                    return JSONResponse(
+                        status_code=413,
+                        content={
+                            "detail": f"Request body too large. Maximum: {self.max_body_bytes} bytes."
+                        },
+                    )
+            # Stash the consumed body so downstream can read it
+            request._body = body  # type: ignore[attr-defined]
+
         return await call_next(request)

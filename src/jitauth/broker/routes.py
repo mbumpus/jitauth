@@ -37,6 +37,7 @@ from jitauth.core.schemas import (
     TaskCreate,
     TaskResponse,
 )
+from jitauth.broker.auth import AuthenticatedCaller, get_caller, require_operator
 from jitauth.db.session import get_db
 from jitauth.proxy.gateway import GatewayError
 
@@ -59,7 +60,7 @@ def health():
 
 
 @router.post("/tasks", response_model=TaskResponse, status_code=201)
-def create_task(req: TaskCreate, db: Session = Depends(get_db)):
+def create_task(req: TaskCreate, db: Session = Depends(get_db), caller: AuthenticatedCaller = Depends(get_caller)):
     now = datetime.now(timezone.utc)
 
     # Hash the runtime session secret if provided (Finding-2 #1, scrypt KDF)
@@ -106,7 +107,7 @@ def create_task(req: TaskCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/tasks/{task_id}", response_model=TaskResponse)
-def get_task(task_id: str, db: Session = Depends(get_db)):
+def get_task(task_id: str, db: Session = Depends(get_db), caller: AuthenticatedCaller = Depends(get_caller)):
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(404, "Task not found")
@@ -117,7 +118,7 @@ def get_task(task_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/tasks/{task_id}/classify", response_model=ClassifyResponse)
-def classify_task(task_id: str, db: Session = Depends(get_db)):
+def classify_task(task_id: str, db: Session = Depends(get_db), caller: AuthenticatedCaller = Depends(get_caller)):
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(404, "Task not found")
@@ -146,7 +147,7 @@ def classify_task(task_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/tasks/{task_id}/policy-evaluate", response_model=PolicyDecisionResponse)
-def evaluate_policy(task_id: str, db: Session = Depends(get_db)):
+def evaluate_policy(task_id: str, db: Session = Depends(get_db), caller: AuthenticatedCaller = Depends(get_caller)):
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(404, "Task not found")
@@ -177,6 +178,15 @@ def evaluate_policy(task_id: str, db: Session = Depends(get_db)):
         task.status = TaskStatus.approved
     elif effect == "require_approval":
         task.status = TaskStatus.pending_approval
+    elif effect in ("require_simulation", "quarantine"):
+        # These effects are defined in the policy vocabulary but not yet
+        # implemented as broker workflows.  Treat as denied with a clear
+        # reason rather than silently accepting an unenforceable state.
+        task.status = TaskStatus.denied
+        _audit(db, task_id, "policy_effect_unsupported", "policy_engine", {
+            "effect": effect,
+            "message": f"Policy effect '{effect}' is not yet implemented; task denied.",
+        })
     else:
         task.status = TaskStatus.denied
 
@@ -219,17 +229,20 @@ def evaluate_policy(task_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/tasks/{task_id}/approve", response_model=ApprovalResponse)
-def approve_task(task_id: str, req: ApprovalRequest, db: Session = Depends(get_db)):
+def approve_task(task_id: str, req: ApprovalRequest, db: Session = Depends(get_db), caller: AuthenticatedCaller = Depends(require_operator)):
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(404, "Task not found")
     if task.status != TaskStatus.pending_approval:
         raise HTTPException(409, f"Task is in state '{task.status}', expected 'pending_approval'")
 
+    # Derive approver identity from authenticated caller, not request body
+    approver_id = caller.caller_id
+
     record = ApprovalRecord(
         id=new_id(),
         task_id=task_id,
-        approver_id=req.approver_id,
+        approver_id=approver_id,
         approved=req.approved,
         reduced_scope=json.dumps(req.reduced_scope) if req.reduced_scope else None,
         reason=req.reason,
@@ -238,7 +251,7 @@ def approve_task(task_id: str, req: ApprovalRequest, db: Session = Depends(get_d
 
     task.status = TaskStatus.approved if req.approved else TaskStatus.denied
 
-    _audit(db, task_id, "task_approval", req.approver_id, {
+    _audit(db, task_id, "task_approval", approver_id, {
         "approved": req.approved,
         "reason": req.reason,
     })
@@ -251,7 +264,7 @@ def approve_task(task_id: str, req: ApprovalRequest, db: Session = Depends(get_d
 
 
 @router.post("/tasks/{task_id}/capabilities", response_model=list[CapabilityResponse])
-def request_capabilities(task_id: str, db: Session = Depends(get_db)):
+def request_capabilities(task_id: str, db: Session = Depends(get_db), caller: AuthenticatedCaller = Depends(get_caller)):
     settings = get_settings()
     task = db.get(Task, task_id)
     if not task:
@@ -394,7 +407,7 @@ def request_capabilities(task_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/execute", response_model=ExecuteResponse)
-async def execute_tool(req: ExecuteRequest, db: Session = Depends(get_db)):
+async def execute_tool(req: ExecuteRequest, db: Session = Depends(get_db), caller: AuthenticatedCaller = Depends(get_caller)):
     from jitauth.proxy.gateway import execute_tool_call
 
     try:
@@ -424,7 +437,7 @@ async def execute_tool(req: ExecuteRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/tasks/{task_id}/complete")
-def complete_task(task_id: str, db: Session = Depends(get_db)):
+def complete_task(task_id: str, db: Session = Depends(get_db), caller: AuthenticatedCaller = Depends(require_operator)):
     """Mark a task as completed and expire all active capabilities."""
     from jitauth.core.schemas import CompleteTaskResponse
 
@@ -447,7 +460,7 @@ def complete_task(task_id: str, db: Session = Depends(get_db)):
         cap.status = CapabilityStatus.expired
         cap.expires_at = now
 
-    _audit(db, task_id, "task_completed", "system", {
+    _audit(db, task_id, "task_completed", caller.caller_id, {
         "capabilities_expired": len(caps),
     })
     db.commit()
@@ -459,7 +472,7 @@ def complete_task(task_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/tasks/{task_id}/fail")
-def fail_task(task_id: str, db: Session = Depends(get_db)):
+def fail_task(task_id: str, db: Session = Depends(get_db), caller: AuthenticatedCaller = Depends(require_operator)):
     """Mark a task as failed and revoke all active capabilities."""
     from jitauth.core.schemas import CompleteTaskResponse
 
@@ -482,7 +495,7 @@ def fail_task(task_id: str, db: Session = Depends(get_db)):
         cap.status = CapabilityStatus.revoked
         cap.revoked_at = now
 
-    _audit(db, task_id, "task_failed", "system", {
+    _audit(db, task_id, "task_failed", caller.caller_id, {
         "capabilities_revoked": len(caps),
     })
     db.commit()
@@ -497,7 +510,7 @@ def fail_task(task_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/capabilities/{capability_id}/revoke", response_model=RevokeResponse)
-def revoke_capability(capability_id: str, req: RevokeRequest, db: Session = Depends(get_db)):
+def revoke_capability(capability_id: str, req: RevokeRequest, db: Session = Depends(get_db), caller: AuthenticatedCaller = Depends(require_operator)):
     cap = db.get(Capability, capability_id)
     if not cap:
         raise HTTPException(404, "Capability not found")
@@ -513,11 +526,11 @@ def revoke_capability(capability_id: str, req: RevokeRequest, db: Session = Depe
         capability_id=capability_id,
         task_id=cap.task_id,
         reason=req.reason,
-        revoked_by=req.revoked_by,
+        revoked_by=caller.caller_id,
     )
     db.add(event)
 
-    _audit(db, cap.task_id, "capability_revoked", req.revoked_by, {
+    _audit(db, cap.task_id, "capability_revoked", caller.caller_id, {
         "capability_id": capability_id,
         "reason": req.reason,
     })
@@ -539,6 +552,7 @@ def query_audit(
     event_type: str | None = None,
     limit: int = 50,
     db: Session = Depends(get_db),
+    caller: AuthenticatedCaller = Depends(require_operator),
 ):
     q = db.query(AuditEvent)
     if task_id:
@@ -555,6 +569,7 @@ def query_audit(
 def verify_audit(
     task_id: str | None = None,
     db: Session = Depends(get_db),
+    caller: AuthenticatedCaller = Depends(require_operator),
 ):
     """Verify the integrity of the audit hash chain."""
     from jitauth.audit.logger import verify_audit_chain
