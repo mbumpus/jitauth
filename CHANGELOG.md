@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-04-15
+
+### Changed
+- **requester_id trust model documented** (Finding-11 #1): `requester_id` is explicitly documented as caller-supplied metadata that the broker records but does not authenticate. Upstream identity verification is the caller's responsibility. Field description added to `TaskCreate` schema and README Authentication section.
+- **README examples match runtime-binding rule** (Finding-11 #2): API key example uses `runtime:my-agent` matching the SDK's `runtime_id="my-agent"`. MCP example includes `--runtime-id mcp-agent` to match the key's caller_id. Auth section explains why runtime_id must match caller_id.
+- `runtime_id` field description in `TaskCreate` schema documents the non-operator binding enforcement
+- README status line updated to v0.7.2
+
 ## [0.7.1] - 2026-04-15
 
 ### Security
@@ -192,6 +200,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shell adapter rejects dangerous characters and unexpected parameters
 - Audit hash chain detects post-hoc tampering
 
+[0.7.2]: https://github.com/digitalego/jitauth/releases/tag/v0.7.2
 [0.7.1]: https://github.com/digitalego/jitauth/releases/tag/v0.7.1
 [0.7.0]: https://github.com/digitalego/jitauth/releases/tag/v0.7.0
 [0.6.0]: https://github.com/digitalego/jitauth/releases/tag/v0.6.0

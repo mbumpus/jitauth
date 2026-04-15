@@ -27,9 +27,20 @@ class TaskActionCreate(BaseModel):
 
 class TaskCreate(BaseModel):
     requester_type: str = Field(default="human_user", max_length=50)
-    requester_id: str = Field(min_length=1, max_length=255)
+    requester_id: str = Field(
+        min_length=1, max_length=255,
+        description="End-user identity on whose behalf this task runs. "
+        "This is caller-supplied metadata — the broker records it for "
+        "audit but does not authenticate it. Upstream identity "
+        "verification is the caller's responsibility.",
+    )
     requester_auth_context: str | None = Field(default=None, max_length=255)
-    runtime_id: str = Field(min_length=1, max_length=255)
+    runtime_id: str = Field(
+        min_length=1, max_length=255,
+        description="Runtime identity. When API auth is enabled, "
+        "non-operator callers must use their own caller_id as "
+        "runtime_id (enforced by the broker).",
+    )
     runtime_type: str = Field(default="llm_orchestrator", max_length=100)
     runtime_trust_tier: str = Field(default="low", max_length=20)
     runtime_secret: str | None = Field(

@@ -29,11 +29,15 @@ The broker starts on `http://localhost:8700`. Define your tools in `adapters.yam
 The broker requires API key authentication by default. Configure keys in your environment or `.env`:
 
 ```bash
-JITAUTH_API_KEYS='{"sk-ops-key": "operator:admin", "sk-agent-key": "runtime:agent-1"}'
+JITAUTH_API_KEYS='{"sk-ops-key": "operator:admin", "sk-agent-key": "runtime:my-agent"}'
 JITAUTH_JWT_SECRET="your-secret-at-least-32-chars-long"
 ```
 
-Operator keys can approve tasks, query audit, and manage any task. Runtime keys can only manage tasks they created. The `/health` endpoint is always public.
+Each key maps to `role:caller_id`. The two roles are "operator" (full access — approve tasks, query audit, manage any task) and "runtime" (can only manage tasks it created). The `/health` endpoint is always public.
+
+Runtime callers must use their own `caller_id` as the `runtime_id` when creating tasks. In the example above, the key `sk-agent-key` resolves to `caller_id="my-agent"`, so all tasks created with that key must use `runtime_id="my-agent"`. This prevents one runtime from impersonating another.
+
+The `requester_id` field on task creation is caller-supplied metadata identifying the end-user on whose behalf the task runs. The broker records it but does not authenticate it — upstream identity verification (e.g. your application's login system) is expected to validate the requester before calling the broker.
 
 For local development and testing, set `JITAUTH_REQUIRE_API_AUTH=false` to disable auth.
 
@@ -45,7 +49,7 @@ from jitauth.sdk import JITAuthClient
 client = JITAuthClient(
     "http://localhost:8700",
     api_key="sk-agent-key",           # Required when auth is enabled
-    runtime_id="my-agent",
+    runtime_id="my-agent",            # Must match caller_id from API key
 )
 
 async with client.task(
@@ -70,7 +74,8 @@ JITAuth runs as an MCP server, so any MCP-compatible agent gets governed tool ac
 ```bash
 pip install jitauth[mcp]
 JITAUTH_API_KEYS='{"sk-mcp-key": "runtime:mcp-agent"}' \
-jitauth mcp-serve --adapters adapters.yaml --api-key sk-mcp-key
+jitauth mcp-serve --adapters adapters.yaml \
+  --api-key sk-mcp-key --runtime-id mcp-agent
 ```
 
 Every tool call from the agent goes through the full governance pipeline. The agent sees tools, calls them normally, and JITAuth handles policy, scoping, credentials, and audit transparently.
@@ -239,7 +244,7 @@ JITAuth is designed with defense in depth:
 
 ## Status
 
-v0.7.0 — production-hardened governance pipeline with 185+ tests. Eight rounds of adversarial code review (D → A). Control-plane authentication, task ownership, atomic budgets, streaming body size enforcement, and secure-by-default SDK. Ready for integration testing with real agent frameworks.
+v0.7.2 — production-hardened governance pipeline with 190+ tests. Eleven rounds of adversarial code review (D → A). Control-plane authentication, runtime identity binding, task ownership, atomic budgets, streaming body size enforcement, and secure-by-default SDK. Ready for integration testing with real agent frameworks.
 
 ## License
 
