@@ -31,7 +31,8 @@ test-postgres-run:
 test-postgres-down:
 	docker compose -f $(COMPOSE_FILE) down -v
 
-test-postgres: test-postgres-up test-postgres-run test-postgres-down
+test-postgres: test-postgres-up
+	@$(MAKE) test-postgres-run; rc=$$?; $(MAKE) test-postgres-down; exit $$rc
 
 # ---------- Full matrix ----------
 

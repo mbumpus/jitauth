@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-04-15
+
+### Fixed
+- **Concurrent chain_seq test** (Finding-13 #1): replaced serial `test_chain_seq_is_unique` with `test_chain_seq_unique_under_concurrent_writes` — fires 8 concurrent task-creation requests via `ThreadPoolExecutor` with per-thread `TestClient` instances, then verifies all `chain_seq` values are unique and monotonically increasing. This validates the `FOR UPDATE` serialization actually holds under real concurrency.
+- **Makefile cleanup on failure** (Finding-13 #2): `make test-postgres` now always tears down the Docker Postgres container even if the test run fails, using a trap-style `rc` capture pattern instead of a simple prerequisite chain.
+
 ## [0.8.0] - 2026-04-15
 
 ### Added

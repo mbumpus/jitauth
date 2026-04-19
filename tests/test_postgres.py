@@ -345,24 +345,52 @@ class TestConcurrentAuditChain:
         result = verify.json()
         assert result["valid"] is True, f"Audit chain broken: {result}"
 
-    def test_chain_seq_is_unique(self, pg_client, slow_adapter):
-        """No duplicate chain_seq values exist after concurrent writes."""
-        # Create a few tasks to generate audit events
-        for i in range(3):
-            _lifecycle(pg_client)
+    def test_chain_seq_unique_under_concurrent_writes(self, pg_client, slow_adapter):
+        """chain_seq values stay unique when multiple writers race.
 
+        This is the test that matters: we fire N task-creation requests
+        concurrently (each produces an audit event via write_audit_event
+        which does SELECT … FOR UPDATE to assign chain_seq), then verify
+        no two events share a chain_seq value.  A serial test would pass
+        trivially; this one exercises the actual locking path.
+        """
+        n_concurrent = 8
+
+        def _create_task(i: int) -> str:
+            from jitauth.broker.server import create_app
+            app = create_app(rate_limit=False)
+            with TestClient(app) as tc:
+                resp = tc.post("/tasks", json={
+                    "requester_id": f"seq_user_{i}",
+                    "runtime_id": f"seq_rt_{i}",
+                    "objective": f"chain_seq concurrency test {i}",
+                    "actions": [{"system": "crm", "action": "read_account", "action_class": "read"}],
+                })
+                assert resp.status_code == 201, resp.json()
+                return resp.json()["id"]
+
+        with ThreadPoolExecutor(max_workers=n_concurrent) as pool:
+            futures = [pool.submit(_create_task, i) for i in range(n_concurrent)]
+            task_ids = [f.result() for f in as_completed(futures)]
+
+        assert len(task_ids) == n_concurrent
+
+        # Now check that every chain_seq is unique and monotonically increasing
         from jitauth.db.session import get_session_factory
         from jitauth.core.models import AuditEvent
         db = get_session_factory()()
         try:
-            events = db.query(AuditEvent).filter(
-                AuditEvent.chain_seq.isnot(None)
-            ).all()
-            seqs = [e.chain_seq for e in events]
-            assert len(seqs) == len(set(seqs)), (
-                f"Duplicate chain_seq values: {sorted(seqs)}"
+            events = (
+                db.query(AuditEvent)
+                .filter(AuditEvent.chain_seq.isnot(None))
+                .order_by(AuditEvent.chain_seq.asc())
+                .all()
             )
-            # Verify monotonically increasing
+            seqs = [e.chain_seq for e in events]
+            assert len(seqs) > 0, "No audit events with chain_seq found"
+            assert len(seqs) == len(set(seqs)), (
+                f"Duplicate chain_seq values under concurrent writes: {sorted(seqs)}"
+            )
             assert seqs == sorted(seqs), (
                 f"chain_seq not monotonically increasing: {seqs}"
             )
